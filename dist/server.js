@@ -1,5 +1,5 @@
 import * as ws from 'ws';
-export { createRPCServer, createRPCServerStream, RPCClientError, controlledDuplex, asyncForEach, Observable, } from './utils';
+export { createRPCServer, createRPCServerStream, RPCClientError, controlledDuplex, asyncForEach, Observable, } from './utils.js';
 export class WebSocketClient {
     readable;
     writable;

@@ -1,4 +1,4 @@
-import { EtherealValue, controlledDuplex } from './utils'
+import { EtherealValue, controlledDuplex } from './utils.js'
 
 export {
 	createRPCClient,
@@ -8,7 +8,7 @@ export {
 	controlledDuplex,
 	asyncForEach,
 	Observable,
-} from './utils'
+} from './utils.js'
 
 export type WebSocketStreamOptions = {
 	protocols?: string[]

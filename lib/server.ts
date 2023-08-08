@@ -8,7 +8,7 @@ export {
 	controlledDuplex,
 	asyncForEach,
 	Observable,
-} from './utils'
+} from './utils.js'
 
 export class WebSocketClient<
 	T extends Uint8Array | string = Uint8Array | string,

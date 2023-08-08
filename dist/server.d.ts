@@ -1,5 +1,5 @@
 import * as ws from 'ws';
-export { createRPCServer, createRPCServerStream, RPCClientError, type SafeRouter, controlledDuplex, asyncForEach, Observable, } from './utils';
+export { createRPCServer, createRPCServerStream, RPCClientError, type SafeRouter, controlledDuplex, asyncForEach, Observable, } from './utils.js';
 export declare class WebSocketClient<T extends Uint8Array | string = Uint8Array | string> {
     readonly readable: ReadableStream<T>;
     readonly writable: WritableStream<T>;

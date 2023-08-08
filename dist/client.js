@@ -1,5 +1,5 @@
-import { EtherealValue, controlledDuplex } from './utils';
-export { createRPCClient, createRPCClientStream, RPCClientError, controlledDuplex, asyncForEach, Observable, } from './utils';
+import { EtherealValue, controlledDuplex } from './utils.js';
+export { createRPCClient, createRPCClientStream, RPCClientError, controlledDuplex, asyncForEach, Observable, } from './utils.js';
 export class WebSocketStreamette {
     url;
     opened;

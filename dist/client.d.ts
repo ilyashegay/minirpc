@@ -1,4 +1,4 @@
-export { createRPCClient, createRPCClientStream, RPCClientError, type SafeRouter, controlledDuplex, asyncForEach, Observable, } from './utils';
+export { createRPCClient, createRPCClientStream, RPCClientError, type SafeRouter, controlledDuplex, asyncForEach, Observable, } from './utils.js';
 export type WebSocketStreamOptions = {
     protocols?: string[];
     signal?: AbortSignal;
