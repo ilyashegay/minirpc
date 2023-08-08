@@ -1,0 +1,67 @@
+{
+	"name": "minirpc",
+	"version": "0.0.1",
+	"type": "module",
+	"exports": {
+		"./client": "./dist/client.js",
+		"./server": "./dist/server.js"
+	},
+	"license": "MIT",
+	"repository": "https://github.com/ilyashegay/minirpc",
+	"files": [
+		"dist/*"
+	],
+	"scripts": {
+		"build": "tsc --project tsconfig.json",
+		"lint": "npm run tsc && npm run eslint",
+		"tsc": "tsc --noEmit --project tsconfig.json",
+		"eslint": "eslint lib"
+	},
+	"dependencies": {
+		"superjson": "^1.13.1",
+		"ws": "^8.13.0"
+	},
+	"devDependencies": {
+		"@types/node": "20.4.4",
+		"@types/ws": "^8.5.5",
+		"@typescript-eslint/eslint-plugin": "^6.3.0",
+		"@typescript-eslint/parser": "^6.3.0",
+		"eslint": "^8.46.0",
+		"eslint-config-prettier": "^9.0.0",
+		"typescript": "5.1.6"
+	},
+	"prettier": {
+		"semi": false,
+		"singleQuote": true,
+		"trailingComma": "all",
+		"useTabs": true
+	},
+	"eslintConfig": {
+		"env": {
+			"es2024": true,
+			"browser": true,
+			"node": true
+		},
+		"parser": "@typescript-eslint/parser",
+		"parserOptions": {
+			"sourceType": "module",
+			"project": true
+		},
+		"rules": {
+			"@typescript-eslint/consistent-type-definitions": [
+				"error",
+				"type"
+			]
+		},
+		"ignorePatterns": [
+			"*.js",
+			"*.d.ts"
+		],
+		"extends": [
+			"eslint:recommended",
+			"plugin:@typescript-eslint/strict-type-checked",
+			"plugin:@typescript-eslint/stylistic-type-checked",
+			"prettier"
+		]
+	}
+}

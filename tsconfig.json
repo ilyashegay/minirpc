@@ -1,0 +1,19 @@
+{
+	"compilerOptions": {
+		"strict": true,
+		"target": "esnext",
+		"module": "esnext",
+		"moduleResolution": "bundler",
+		"isolatedModules": true,
+		"esModuleInterop": true,
+		"resolveJsonModule": true,
+		"verbatimModuleSyntax": true,
+		"forceConsistentCasingInFileNames": true,
+		"lib": ["DOM", "ESNext"],
+		"baseUrl": ".",
+		"outDir": "./dist",
+		"declaration": true,
+		"declarationDir": "./dist"
+	},
+	"include": ["./lib/*"]
+}
