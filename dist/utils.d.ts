@@ -32,8 +32,8 @@ export declare function createRPCClient<T, Router extends SafeRouter>(): {
 export declare function createRPCClientStream<T, Router extends SafeRouter>(): {
     router: Router;
     events: Observable<T>;
-    readable: ReadableStream<string | Uint8Array>;
-    writable: WritableStream<string>;
+    readable: ReadableStream<string>;
+    writable: WritableStream<string | Uint8Array>;
 };
 export declare function createRPCServer(): {
     router: <Router extends UnsafeRouter>(router: Router) => SafeRouter<Router>;
@@ -50,10 +50,14 @@ export declare function createRPCServerStream<T>(options: {
     router: <Router extends UnsafeRouter>(router: Router) => SafeRouter<Router>;
     connect: () => TransformStream<string | Uint8Array, string>;
 };
-export declare function controlledDuplex<I, O>(transformer?: Transformer<I, O>, writableStrategy?: QueuingStrategy<I>, readableStrategy?: QueuingStrategy<O>): {
-    controller: TransformStreamDefaultController<O>;
-    readable: ReadableStream<O>;
-    writable: WritableStream<I>;
+export declare function controlledDuplex<I, O>(source: {
+    start?(controller: ReadableStreamDefaultController<I>): void | PromiseLike<void>;
+    write(chunk: O, controller: ReadableStreamDefaultController<I>): void | PromiseLike<void>;
+    close?(controller: ReadableStreamDefaultController<I>): void | PromiseLike<void>;
+}): {
+    controller: ReadableStreamDefaultController<I>;
+    readable: ReadableStream<I>;
+    writable: WritableStream<O>;
 };
 export declare function asyncForEach<T>(iterable: AsyncIterable<T> | ReadableStream<T>, handle: (value: T) => Promise<void> | void): Promise<void>;
 type Observer<T> = (value: T) => void;

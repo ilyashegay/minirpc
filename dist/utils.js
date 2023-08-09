@@ -63,7 +63,7 @@ export function createRPCClientStream() {
                 controller.enqueue(superjson.stringify(request));
             });
         },
-        transform(chunk) {
+        write(chunk) {
             client.message(superjson.parse(String(chunk)));
         },
     });
@@ -154,15 +154,24 @@ export function createRPCServerStream(options) {
         connect,
     };
 }
-export function controlledDuplex(transformer, writableStrategy, readableStrategy) {
+export function controlledDuplex(source) {
     let controller;
-    const { readable, writable } = new TransformStream({
-        ...transformer,
-        start(c) {
+    const readable = new ReadableStream({
+        async start(c) {
             controller = c;
-            return transformer?.start?.(c);
+            await source.start?.(controller);
         },
-    }, writableStrategy, readableStrategy);
+    });
+    const writable = new WritableStream({
+        write(chunk) {
+            invariant(controller);
+            return source.write(chunk, controller);
+        },
+        close() {
+            invariant(controller);
+            return source.close?.(controller);
+        },
+    });
     invariant(controller);
     return { controller, readable, writable };
 }

@@ -20,11 +20,11 @@ export class WebSocketStreamette {
             });
         });
         const duplex = controlledDuplex({
-            async transform(chunk) {
+            async write(chunk) {
                 const ws = await socket;
                 ws.send(chunk);
             },
-            async flush() {
+            async close() {
                 done = true;
                 const ws = await socket;
                 ws.close();
@@ -80,7 +80,7 @@ export class WebSocketStreamette {
                 }
             }
             finally {
-                duplex.controller.terminate();
+                duplex.controller.close();
             }
         }
         this.readable = duplex.readable;

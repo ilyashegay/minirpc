@@ -222,8 +222,6 @@ export function createRPCServerStream<T>(options: {
 	}
 }
 
-console.log('Yo')
-
 export function controlledDuplex<I, O>(source: {
 	start?(
 		controller: ReadableStreamDefaultController<I>,
