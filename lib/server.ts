@@ -1,4 +1,5 @@
 import * as ws from 'ws'
+import { controlledDuplex } from './utils.js'
 
 export {
 	createRPCServer,
@@ -18,19 +19,19 @@ export class WebSocketClient<
 	readonly closed: Promise<{ code?: number; reason?: string }>
 
 	constructor(ws: ws.WebSocket) {
-		const duplex = new TransformStream<T, T>({
+		const duplex = controlledDuplex<T, T>({
 			start(controller) {
 				ws.addEventListener('message', ({ data }) => {
 					controller.enqueue(data as T)
 				})
 				ws.addEventListener('close', () => {
-					controller.terminate()
+					controller.close()
 				})
 			},
-			transform(chunk) {
+			write(chunk) {
 				ws.send(chunk)
 			},
-			flush() {
+			close() {
 				ws.close()
 			},
 		})

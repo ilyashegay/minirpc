@@ -110,7 +110,7 @@ export function createRPCClientStream<T, Router extends SafeRouter>() {
 				controller.enqueue(superjson.stringify(request))
 			})
 		},
-		transform(chunk) {
+		write(chunk) {
 			client.message(superjson.parse(String(chunk)))
 		},
 	})
@@ -222,23 +222,37 @@ export function createRPCServerStream<T>(options: {
 	}
 }
 
-export function controlledDuplex<I, O>(
-	transformer?: Transformer<I, O>,
-	writableStrategy?: QueuingStrategy<I>,
-	readableStrategy?: QueuingStrategy<O>,
-) {
-	let controller: TransformStreamDefaultController<O> | undefined
-	const { readable, writable } = new TransformStream<I, O>(
-		{
-			...transformer,
-			start(c) {
-				controller = c
-				return transformer?.start?.(c) as void | Promise<void>
-			},
+console.log('Yo')
+
+export function controlledDuplex<I, O>(source: {
+	start?(
+		controller: ReadableStreamDefaultController<I>,
+	): void | PromiseLike<void>
+	write(
+		chunk: O,
+		controller: ReadableStreamDefaultController<I>,
+	): void | PromiseLike<void>
+	close?(
+		controller: ReadableStreamDefaultController<I>,
+	): void | PromiseLike<void>
+}) {
+	let controller: ReadableStreamDefaultController<I> | undefined
+	const readable = new ReadableStream<I>({
+		async start(c) {
+			controller = c
+			await source.start?.(controller)
 		},
-		writableStrategy,
-		readableStrategy,
-	)
+	})
+	const writable = new WritableStream<O>({
+		write(chunk) {
+			invariant(controller)
+			return source.write(chunk, controller)
+		},
+		close() {
+			invariant(controller)
+			return source.close?.(controller)
+		},
+	})
 	invariant(controller)
 	return { controller, readable, writable }
 }
