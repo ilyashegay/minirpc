@@ -15,5 +15,5 @@
 		"declaration": true,
 		"declarationDir": "./dist"
 	},
-	"include": ["./lib/*"]
+	"include": ["./lib/"]
 }
