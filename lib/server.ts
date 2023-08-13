@@ -97,15 +97,19 @@ export function createServer<T>(onError: (error: unknown) => void) {
 				if (!Buffer.isBuffer(data)) {
 					throw new Error('Wrong Buffer Type')
 				}
-				const request = parser(data, isBinary) as Request | undefined
+				const request = parser(data, isBinary) as
+					| Request
+					| 'heartbeat'
+					| undefined
+				if (request === 'heartbeat') {
+					alive.add(ws)
+					return
+				}
 				if (request === undefined) return
 				handleMessage(methods, request, (response, error) => {
 					if (error) onError(error)
 					sender(response)
 				})
-			})
-			ws.on('pong', () => {
-				alive.add(ws)
 			})
 			const unsubscribe = options.onConnection({
 				send(event) {
@@ -129,7 +133,6 @@ export function createServer<T>(onError: (error: unknown) => void) {
 					continue
 				}
 				alive.delete(ws)
-				ws.ping()
 			}
 		}, 30000)
 		const server = http.createServer(

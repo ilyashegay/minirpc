@@ -107,6 +107,9 @@ export function createClient<T, Router extends SafeRouter>() {
 			...options,
 		})
 		requests.subscribe(makeMessageSender(client.send))
+		setInterval(() => {
+			client.send('heartbeat')
+		}, 20000)
 		return client.listen()
 	}
 

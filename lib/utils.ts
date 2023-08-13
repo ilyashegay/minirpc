@@ -136,7 +136,7 @@ export function makeMessageParser() {
 	return function parse(
 		data: string | Uint8Array,
 		isBinary: boolean,
-	): Request | ServerMessage<unknown> | undefined {
+	): Request | ServerMessage<unknown> | 'heartbeat' | undefined {
 		if (isBinary) {
 			invariant(activeId !== undefined, 'Unexpected binary message')
 			const stream = streams.get(activeId)
@@ -146,7 +146,11 @@ export function makeMessageParser() {
 			stream.read += data.byteLength
 			return
 		}
-		const json = JSON.parse(String(data)) as StreamMessage | unknown[]
+		const str = String(data)
+		if (str === 'heartbeat') {
+			return str
+		}
+		const json = JSON.parse(str) as StreamMessage | unknown[]
 		if ('stream' in json) {
 			if (json.stream === 'start') {
 				invariant(activeId === undefined, 'Stream not closed')

@@ -65,6 +65,10 @@ export function createServer(onError) {
                     throw new Error('Wrong Buffer Type');
                 }
                 const request = parser(data, isBinary);
+                if (request === 'heartbeat') {
+                    alive.add(ws);
+                    return;
+                }
                 if (request === undefined)
                     return;
                 handleMessage(methods, request, (response, error) => {
@@ -72,9 +76,6 @@ export function createServer(onError) {
                         onError(error);
                     sender(response);
                 });
-            });
-            ws.on('pong', () => {
-                alive.add(ws);
             });
             const unsubscribe = options.onConnection({
                 send(event) {
@@ -98,7 +99,6 @@ export function createServer(onError) {
                     continue;
                 }
                 alive.delete(ws);
-                ws.ping();
             }
         }, 30000);
         const server = http.createServer(options.onRequest ??

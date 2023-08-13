@@ -38,7 +38,7 @@ export declare class MiniSignal<T> {
 export declare function asyncForEach<T>(iterable: AsyncIterable<T> | ReadableStream<T>, handle: (value: T) => PromiseLike<void> | void): Promise<void>;
 export declare function invariant(condition: unknown, message?: string): asserts condition;
 export declare function sleep(ms: number): MiniSignal<void>;
-export declare function makeMessageParser(): (data: string | Uint8Array, isBinary: boolean) => Request | ServerMessage<unknown> | undefined;
+export declare function makeMessageParser(): (data: string | Uint8Array, isBinary: boolean) => Request | ServerMessage<unknown> | 'heartbeat' | undefined;
 export declare function makeMessageSender<T>(send: (data: string | Uint8Array) => void): (message: T) => void;
 export declare function stringifySimple(value: unknown): string;
 export {};

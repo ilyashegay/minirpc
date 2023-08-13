@@ -53,6 +53,9 @@ export function createClient() {
             ...options,
         });
         requests.subscribe(makeMessageSender(client.send));
+        setInterval(() => {
+            client.send('heartbeat');
+        }, 20000);
         return client.listen();
     }
     return { router, events, listen };

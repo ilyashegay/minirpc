@@ -95,7 +95,11 @@ export function makeMessageParser() {
             stream.read += data.byteLength;
             return;
         }
-        const json = JSON.parse(String(data));
+        const str = String(data);
+        if (str === 'heartbeat') {
+            return str;
+        }
+        const json = JSON.parse(str);
         if ('stream' in json) {
             if (json.stream === 'start') {
                 invariant(activeId === undefined, 'Stream not closed');
