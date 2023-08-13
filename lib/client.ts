@@ -1,13 +1,14 @@
-import superjson from 'superjson'
 import {
 	type SafeRouter,
 	type Request,
-	type Response,
+	type ServerMessage,
 	Observable,
 	sleep,
+	makeMessageParser,
+	makeMessageSender,
 } from './utils.js'
 
-export * from './utils'
+export * from './utils.js'
 
 export type WebSocketClientOptions = {
 	protocols?: string[]
@@ -43,37 +44,28 @@ type PromiseHandle<T> = {
 	reject: Parameters<ConstructorParameters<typeof Promise<T>>[0]>[1]
 }
 
-type EventMessage<T> = {
-	event: T
-}
-
-type ServerMessage<T> = Response | EventMessage<T>
-
 export function createClient<T, Router extends SafeRouter>() {
 	let nextRequestId = 1
 	const queries = new Map<number, PromiseHandle<unknown>>()
 	const events = new Observable<T>()
 	const requests = new Observable<Request>()
 
-	function message(msg: ServerMessage<T> | string) {
-		if (typeof msg === 'string') {
-			msg = superjson.parse<ServerMessage<T>>(msg)
-		}
-		if ('event' in msg) {
-			events.next(msg.event)
+	function handleMessage(message: ServerMessage<T>) {
+		if ('event' in message) {
+			events.next(message.event)
 			return
 		}
-		const handle = queries.get(msg.id)
+		const handle = queries.get(message.id)
 		if (!handle) {
-			console.error(`Unknown response ID: ${msg.id}`)
+			console.error(`Unknown response ID: ${message.id}`)
 			return
 		}
-		queries.delete(msg.id)
-		if ('result' in msg) {
-			handle.resolve(msg.result)
+		queries.delete(message.id)
+		if ('result' in message) {
+			handle.resolve(message.result)
 		} else {
 			handle.reject(
-				typeof msg.error === 'string' ? msg.error : 'request failed',
+				typeof message.error === 'string' ? message.error : 'request failed',
 			)
 		}
 	}
@@ -103,17 +95,18 @@ export function createClient<T, Router extends SafeRouter>() {
 		) => void | PromiseLike<void>,
 		options: WebSocketClientOptions = {},
 	) {
+		const parser = makeMessageParser()
 		const client = createWebSocketClient({
 			url,
 			onConnection: handler,
-			onMessage(data) {
-				message(String(data))
+			onMessage(data, isBinary) {
+				const message = parser(data, isBinary) as ServerMessage<T> | undefined
+				if (message === undefined) return
+				handleMessage(message)
 			},
 			...options,
 		})
-		requests.subscribe((request) => {
-			client.send(superjson.stringify(request))
-		})
+		requests.subscribe(makeMessageSender(client.send))
 		return client.listen()
 	}
 
@@ -183,7 +176,7 @@ export function createWebSocketClient(
 		onConnection?: (
 			connection: WebSocketClientConnection,
 		) => void | PromiseLike<void>
-		onMessage: (message: string | Uint8Array) => void
+		onMessage: (message: string | Uint8Array, isBinary: boolean) => void
 	},
 ) {
 	const aborted = abortSignalToRejectedPromise(options.signal)
@@ -207,7 +200,7 @@ export function createWebSocketClient(
 		}
 	}
 	function onMessageEvent(message: MessageEvent<string | Uint8Array>) {
-		options.onMessage(message.data)
+		options.onMessage(message.data, typeof message.data !== 'string')
 	}
 	async function listen() {
 		try {

@@ -1,15 +1,17 @@
 import http from 'node:http'
 import WebSocket, { WebSocketServer } from 'ws'
-import superjson from 'superjson'
 import {
 	type SafeRouter,
 	type UnsafeRouter,
 	type Request,
 	type Response,
 	RPCClientError,
+	makeMessageParser,
+	stringifySimple,
+	makeMessageSender,
 } from './utils.js'
 
-export * from './utils'
+export * from './utils.js'
 
 function safety<P extends unknown[], R extends Promise<unknown>>(
 	fn: (...args: P) => R,
@@ -23,30 +25,6 @@ function safety<P extends unknown[], R extends Promise<unknown>>(
 	}
 }
 
-function handleMessage(
-	methods: SafeRouter,
-	req: Request | string,
-	callback: (response: Response, error?: unknown) => void,
-) {
-	const request = typeof req === 'string' ? superjson.parse<Request>(req) : req
-	if (!(request.method in methods)) {
-		callback({ id: request.id, error: `Unknown method: ${request.method}` })
-		return
-	}
-	methods[request.method](...request.params)
-		.then((result) => {
-			callback({ id: request.id, result: result ?? null })
-		})
-		.catch((error: unknown) => {
-			let message: string | true = true
-			if (error instanceof RPCClientError) {
-				message = error.message
-				error = undefined
-			}
-			callback({ id: request.id, error: message }, error)
-		})
-}
-
 export type Connection<T> = {
 	send(event: T): void
 	close(code?: number, data?: string | Buffer): void
@@ -56,6 +34,29 @@ export type Connection<T> = {
 export function createServer<T>(onError: (error: unknown) => void) {
 	const methods: SafeRouter = {}
 	let wss: WebSocketServer | undefined
+
+	function handleMessage(
+		methods: SafeRouter,
+		request: Request,
+		callback: (response: Response, error?: unknown) => void,
+	) {
+		if (!(request.method in methods)) {
+			callback({ id: request.id, error: `Unknown method: ${request.method}` })
+			return
+		}
+		methods[request.method](...request.params)
+			.then((result) => {
+				callback({ id: request.id, result: result ?? null })
+			})
+			.catch((error: unknown) => {
+				let message: string | true = true
+				if (error instanceof RPCClientError) {
+					message = error.message
+					error = undefined
+				}
+				callback({ id: request.id, error: message }, error)
+			})
+	}
 
 	function router<Router extends UnsafeRouter>(router: Router) {
 		const result = {} as SafeRouter<Router>
@@ -68,7 +69,7 @@ export function createServer<T>(onError: (error: unknown) => void) {
 
 	function broadcast(event: T) {
 		if (!wss?.clients.size) return
-		const message = superjson.stringify({ event })
+		const message = stringifySimple({ event })
 		for (const ws of wss.clients) {
 			if (ws.readyState === WebSocket.OPEN) {
 				ws.send(message)
@@ -88,10 +89,19 @@ export function createServer<T>(onError: (error: unknown) => void) {
 		const alive = new WeakSet<WebSocket>()
 		const wss = new WebSocketServer({ noServer: true })
 		wss.on('connection', (ws) => {
-			ws.on('message', (data) => {
-				handleMessage(methods, String(data), (response, error) => {
+			const parser = makeMessageParser()
+			const sender = makeMessageSender((data) => {
+				ws.send(data)
+			})
+			ws.on('message', (data, isBinary) => {
+				if (!Buffer.isBuffer(data)) {
+					throw new Error('Wrong Buffer Type')
+				}
+				const request = parser(data, isBinary) as Request | undefined
+				if (request === undefined) return
+				handleMessage(methods, request, (response, error) => {
 					if (error) onError(error)
-					ws.send(superjson.stringify(response))
+					sender(response)
 				})
 			})
 			ws.on('pong', () => {
@@ -99,7 +109,7 @@ export function createServer<T>(onError: (error: unknown) => void) {
 			})
 			const unsubscribe = options.onConnection({
 				send(event) {
-					ws.send(superjson.stringify({ event }))
+					sender({ event })
 				},
 				close(code, data) {
 					ws.close(code, data)

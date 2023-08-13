@@ -1,12 +1,22 @@
-import * as ws from 'ws';
-export { createRPCServer, createRPCServerStream, RPCClientError, type SafeRouter, controlledDuplex, asyncForEach, Observable, } from './utils.js';
-export declare class WebSocketClient<T extends Uint8Array | string = Uint8Array | string> {
-    readonly readable: ReadableStream<T>;
-    readonly writable: WritableStream<T>;
-    readonly closed: Promise<{
-        code?: number;
-        reason?: string;
-    }>;
-    constructor(ws: ws.WebSocket);
-}
-export declare function listen<T extends Uint8Array | string = Uint8Array | string>(options: ws.ServerOptions, onConnection: (socket: WebSocketClient<T>) => unknown): void;
+/// <reference types="node" />
+/// <reference types="node" />
+import http from 'node:http';
+import WebSocket from 'ws';
+import { type SafeRouter, type UnsafeRouter } from './utils.js';
+export * from './utils.js';
+export type Connection<T> = {
+    send(event: T): void;
+    close(code?: number, data?: string | Buffer): void;
+    terminate(): void;
+};
+export declare function createServer<T>(onError: (error: unknown) => void): {
+    router: <Router extends UnsafeRouter>(router: Router) => SafeRouter<Router>;
+    broadcast: (event: T) => void;
+    listen: (options: {
+        port?: number | undefined;
+        signal?: AbortSignal | undefined;
+        authenticate?: ((request: http.IncomingMessage) => boolean) | undefined;
+        onRequest?: http.RequestListener<typeof http.IncomingMessage, typeof http.ServerResponse> | undefined;
+        onConnection: (connection: Connection<T>) => ((event: WebSocket.CloseEvent) => void) | undefined;
+    }) => Promise<void>;
+};

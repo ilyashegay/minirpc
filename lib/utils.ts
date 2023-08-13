@@ -1,3 +1,5 @@
+import * as devalue from 'devalue'
+
 export type Request<T extends unknown[] = unknown[]> = {
 	id: number
 	method: string
@@ -14,7 +16,12 @@ export type ErrorResponse = {
 	error: unknown
 }
 
+export type EventMessage<T> = {
+	event: T
+}
+
 export type Response = ResultResponse | ErrorResponse
+export type ServerMessage<T> = Response | EventMessage<T>
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export type UnsafeRouter = Record<string, (...args: any[]) => any>
@@ -97,10 +104,155 @@ export async function asyncForEach<T>(
 	}
 }
 
+export function invariant(
+	condition: unknown,
+	message?: string,
+): asserts condition {
+	if (!condition) throw new Error(message)
+}
+
 export function sleep(ms: number) {
 	const signal = new MiniSignal<void>()
 	setTimeout(() => {
 		signal.resolve()
 	}, ms)
 	return signal
+}
+
+type StreamMessage =
+	| { id: number; stream: 'start' }
+	| { id: number; stream: 'done'; length: number }
+	| { id: number; stream: 'error'; error: string }
+
+export function makeMessageParser() {
+	const streams = new Map<
+		number,
+		{
+			controller: ReadableStreamDefaultController<Uint8Array>
+			read: number
+		}
+	>()
+	let activeId: number | undefined
+	return function parse(
+		data: string | Uint8Array,
+		isBinary: boolean,
+	): Request | ServerMessage<unknown> | undefined {
+		if (isBinary) {
+			invariant(activeId !== undefined, 'Unexpected binary message')
+			const stream = streams.get(activeId)
+			invariant(stream, `Unknown stream id ${activeId}`)
+			invariant(ArrayBuffer.isView(data), 'Binary chunk is of type string')
+			stream.controller.enqueue(data)
+			stream.read += data.byteLength
+			return
+		}
+		const json = JSON.parse(String(data)) as StreamMessage | unknown[]
+		if ('stream' in json) {
+			if (json.stream === 'start') {
+				invariant(activeId === undefined, 'Stream not closed')
+				activeId = json.id
+			}
+			if (json.stream === 'done') {
+				invariant(activeId === json.id, 'Wrong Stream closed')
+				const stream = streams.get(json.id)
+				invariant(stream, 'Unexpected stream end')
+				invariant(
+					stream.read === json.length,
+					`Stream Length: Expected ${json.length} bytes. Received ${stream.read}`,
+				)
+				stream.controller.close()
+				activeId = undefined
+			}
+			if (json.stream === 'error') {
+				invariant(activeId === json.id, 'Wrong Stream closed')
+				const stream = streams.get(json.id)
+				invariant(stream, 'Unexpected stream end')
+				stream.controller.error(json.error)
+				activeId = undefined
+			}
+		}
+		const revivers = {
+			URL: (href: string) => new URL(href),
+			Stream: (id: number) =>
+				new ReadableStream({
+					start(controller) {
+						streams.set(id, { controller, read: 0 })
+					},
+				}),
+		}
+		if (Array.isArray(json)) {
+			return devalue.unflatten(json, revivers) as
+				| Request
+				| ServerMessage<unknown>
+		}
+	}
+}
+
+export function makeMessageSender<T>(
+	send: (data: string | Uint8Array) => void,
+) {
+	let nextId = 1
+	const queue: { id: number; stream: ReadableStream<string | Uint8Array> }[] =
+		[]
+
+	async function sendStream() {
+		const { id, stream } = queue[0]
+		const reader = stream.getReader()
+		let read = 0
+		try {
+			send(JSON.stringify({ stream: 'start', id }))
+			for (;;) {
+				const { done, value } = await reader.read()
+				if (done) break
+				if (value instanceof ArrayBuffer) {
+					read += value.byteLength
+					send(value)
+				}
+				if (ArrayBuffer.isView(value)) {
+					read += value.byteLength
+					send(value)
+				}
+				if (typeof value === 'string') {
+					read += value.length
+					send(new TextEncoder().encode(value))
+				}
+				throw new Error('Unexpected value')
+			}
+			send(JSON.stringify({ stream: 'done', id, length: read }))
+		} catch (error) {
+			send(JSON.stringify({ stream: 'error', id, error }))
+		} finally {
+			reader.releaseLock()
+			queue.shift()
+			if (queue.length) void sendStream()
+		}
+	}
+
+	return (message: T) => {
+		send(
+			devalue.stringify(message, {
+				URL: (val) => val instanceof URL && val.href,
+				Stream: (val) => {
+					if (!(val instanceof ReadableStream)) return
+					const id = nextId++
+					queue.push({
+						id,
+						stream: val as ReadableStream<string | Uint8Array>,
+					})
+					if (queue.length === 1) {
+						sendStream().catch((error) => {
+							console.error(error)
+						})
+					}
+					return id
+				},
+			}),
+		)
+	}
+}
+
+export function stringifySimple(value: unknown) {
+	return devalue.stringify(value, {
+		URL: (val) => val instanceof URL && val.href,
+	})
 }
