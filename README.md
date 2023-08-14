@@ -55,7 +55,7 @@ import type { Alert, Router } from './server'
 const rpc = createClient<Alert, Router>()
 export default rpc.router
 
-rpc.events.subscribe((event) => {
+rpc.subscribe((event) => {
 	console.log(event) // { type: 'greeting', name: string }
 })
 

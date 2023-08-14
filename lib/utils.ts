@@ -6,22 +6,29 @@ export type Request<T extends unknown[] = unknown[]> = {
 	params: T
 }
 
-export type ResultResponse<T = unknown> = {
+type ResultResponse<T = unknown> = {
 	id: number
 	result: T
 }
 
-export type ErrorResponse = {
+type ErrorResponse = {
 	id: number
 	error: unknown
 }
 
-export type EventMessage<T> = {
+type EventMessage<T> = {
 	event: T
 }
 
+type StreamMessage =
+	| { id: number; stream: 'start' }
+	| { id: number; stream: 'done'; length: number }
+	| { id: number; stream: 'error'; error: string }
+
 export type Response = ResultResponse | ErrorResponse
 export type ServerMessage<T> = Response | EventMessage<T>
+
+export type SocketData = string | ArrayBuffer | ArrayBufferView
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export type UnsafeRouter = Record<string, (...args: any[]) => any>
@@ -32,78 +39,6 @@ export type SafeRouter<R extends UnsafeRouter = UnsafeRouter> = {
 	) => Promise<Awaited<ReturnType<R[key]>>>
 }
 
-export class RPCClientError extends Error {}
-
-type Observer<T> = (value: T) => void
-export class Observable<T> {
-	private observers: Observer<T>[] = []
-	subscribe(observer: Observer<T>) {
-		this.observers.push(observer)
-	}
-	next(value: T) {
-		for (const observer of this.observers) {
-			observer(value)
-		}
-	}
-}
-
-export class MiniSignal<T> {
-	static resolve<T>(value: T) {
-		const signal = new MiniSignal<T>()
-		signal.resolve(value)
-		return signal
-	}
-	#s = false
-	#v?: T
-	#h?: ((value: T) => void) | ((value: T) => void)[]
-	#p?: Promise<T>
-	resolve(value: T) {
-		const h = this.#h
-		this.#s = true
-		this.#v = value
-		this.#h = undefined
-		if (typeof h === 'function') {
-			h(value)
-		} else if (typeof h !== 'undefined') {
-			for (const i of h) i(value)
-		}
-	}
-	then(handler: (value: T) => void) {
-		if (this.#s) {
-			handler(this.#v as T)
-		} else if (typeof this.#h === 'undefined') {
-			this.#h = handler
-		} else if (typeof this.#h === 'function') {
-			this.#h = [this.#h, handler]
-		} else {
-			this.#h.push(handler)
-		}
-	}
-	get promise() {
-		return (this.#p ??= this.#s
-			? Promise.resolve(this.#v as T)
-			: new Promise<T>((resolve) => {
-					this.then(resolve)
-			  }))
-	}
-}
-
-export async function asyncForEach<T>(
-	iterable: AsyncIterable<T> | ReadableStream<T>,
-	handle: (value: T) => PromiseLike<void> | void,
-) {
-	if (iterable instanceof ReadableStream) {
-		for (const reader = iterable.getReader(); ; ) {
-			const { value, done } = await reader.read()
-			if (value !== undefined) await handle(value)
-			if (done) return
-		}
-	}
-	for await (const connection of iterable) {
-		await handle(connection)
-	}
-}
-
 export function invariant(
 	condition: unknown,
 	message?: string,
@@ -111,37 +46,30 @@ export function invariant(
 	if (!condition) throw new Error(message)
 }
 
-export function sleep(ms: number) {
-	const signal = new MiniSignal<void>()
-	setTimeout(() => {
-		signal.resolve()
-	}, ms)
-	return signal
-}
-
-type StreamMessage =
-	| { id: number; stream: 'start' }
-	| { id: number; stream: 'done'; length: number }
-	| { id: number; stream: 'error'; error: string }
-
 export function makeMessageParser() {
 	const streams = new Map<
 		number,
 		{
-			controller: ReadableStreamDefaultController<Uint8Array>
+			controller: ReadableStreamDefaultController<ArrayBufferView>
+			canceled: boolean
 			read: number
 		}
 	>()
 	let activeId: number | undefined
 	return function parse(
-		data: string | Uint8Array,
+		data: SocketData,
 		isBinary: boolean,
 	): Request | ServerMessage<unknown> | 'heartbeat' | undefined {
 		if (isBinary) {
 			invariant(activeId !== undefined, 'Unexpected binary message')
 			const stream = streams.get(activeId)
 			invariant(stream, `Unknown stream id ${activeId}`)
-			invariant(ArrayBuffer.isView(data), 'Binary chunk is of type string')
+			if (stream.canceled) return
+			if (data instanceof ArrayBuffer) {
+				data = new Uint8Array(data)
+			}
+			invariant(typeof data !== 'string', 'Binary chunk is of type string')
+			invariant(ArrayBuffer.isView(data), 'Unknown chunk type')
 			stream.controller.enqueue(data)
 			stream.read += data.byteLength
 			return
@@ -160,6 +88,7 @@ export function makeMessageParser() {
 				invariant(activeId === json.id, 'Wrong Stream closed')
 				const stream = streams.get(json.id)
 				invariant(stream, 'Unexpected stream end')
+				if (stream.canceled) return
 				invariant(
 					stream.read === json.length,
 					`Stream Length: Expected ${json.length} bytes. Received ${stream.read}`,
@@ -171,18 +100,25 @@ export function makeMessageParser() {
 				invariant(activeId === json.id, 'Wrong Stream closed')
 				const stream = streams.get(json.id)
 				invariant(stream, 'Unexpected stream end')
+				if (stream.canceled) return
 				stream.controller.error(json.error)
 				activeId = undefined
 			}
 		}
 		const revivers = {
 			URL: (href: string) => new URL(href),
-			Stream: (id: number) =>
-				new ReadableStream({
+			ReadableStream: (id: number) => {
+				new ReadableStream<ArrayBufferView>({
 					start(controller) {
-						streams.set(id, { controller, read: 0 })
+						streams.set(id, { controller, read: 0, canceled: false })
 					},
-				}),
+					cancel() {
+						const stream = streams.get(id)
+						invariant(stream)
+						stream.canceled = true
+					},
+				})
+			},
 		}
 		if (Array.isArray(json)) {
 			return devalue.unflatten(json, revivers) as
@@ -192,14 +128,14 @@ export function makeMessageParser() {
 	}
 }
 
-export function makeMessageSender<T>(
-	send: (data: string | Uint8Array) => void,
-) {
+export function makeMessageSender(send: (data: SocketData) => void) {
 	let nextId = 1
-	const queue: { id: number; stream: ReadableStream<string | Uint8Array> }[] =
-		[]
+	let streamActive = false
+	const queue: { id: number; stream: ReadableStream<SocketData> }[] = []
 
 	async function sendStream() {
+		if (!queue.length) return
+		streamActive = true
 		const { id, stream } = queue[0]
 		const reader = stream.getReader()
 		let read = 0
@@ -211,47 +147,48 @@ export function makeMessageSender<T>(
 				if (value instanceof ArrayBuffer) {
 					read += value.byteLength
 					send(value)
-				}
-				if (ArrayBuffer.isView(value)) {
+				} else if (ArrayBuffer.isView(value)) {
 					read += value.byteLength
 					send(value)
-				}
-				if (typeof value === 'string') {
+				} else if (typeof value === 'string') {
 					read += value.length
 					send(new TextEncoder().encode(value))
+				} else {
+					throw new Error('Unexpected value')
 				}
-				throw new Error('Unexpected value')
 			}
 			send(JSON.stringify({ stream: 'done', id, length: read }))
 		} catch (error) {
-			send(JSON.stringify({ stream: 'error', id, error }))
+			console.error(error)
+			send(JSON.stringify({ stream: 'error', id, error: String(error) }))
 		} finally {
 			reader.releaseLock()
 			queue.shift()
+			streamActive = false
 			if (queue.length) void sendStream()
 		}
 	}
 
-	return (message: T) => {
+	return (message: Request | ServerMessage<unknown>) => {
 		send(
 			devalue.stringify(message, {
 				URL: (val) => val instanceof URL && val.href,
-				Stream: (val) => {
+				ReadableStream: (val) => {
 					if (!(val instanceof ReadableStream)) return
 					const id = nextId++
 					queue.push({
 						id,
-						stream: val as ReadableStream<string | Uint8Array>,
+						stream: val as ReadableStream<SocketData>,
 					})
-					if (queue.length === 1) {
-						sendStream().catch((error) => {
-							console.error(error)
-						})
-					}
 					return id
 				},
 			}),
 		)
+		if (!streamActive && queue.length) {
+			sendStream().catch((error) => {
+				console.error(error)
+			})
+		}
 	}
 }
 

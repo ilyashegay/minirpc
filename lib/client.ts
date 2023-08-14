@@ -2,26 +2,30 @@ import {
 	type SafeRouter,
 	type Request,
 	type ServerMessage,
-	Observable,
-	sleep,
+	type SocketData,
 	makeMessageParser,
 	makeMessageSender,
+	invariant,
 } from './utils.js'
 
-export * from './utils.js'
-
-export type WebSocketClientOptions = {
+export type Options = {
 	protocols?: string[]
 	signal?: AbortSignal
 	backoff?: BackoffOptions
 	WebSocket?: WebSocketLike
 }
 
-export type WebSocketClientConnection = {
+export type WebSocketClientOptions = Options & {
+	url: string
+	onConnection?: (connection: Connection) => void | PromiseLike<void>
+	onMessage: (message: SocketData, isBinary: boolean) => void
+}
+
+export type Connection = {
 	protocol: string
 	extensions: string
 	closed: Promise<CloseEvent>
-	send(message: string | Uint8Array): void
+	send(message: SocketData): void
 	close(code?: number, reason?: string): void
 }
 
@@ -47,12 +51,18 @@ type PromiseHandle<T> = {
 export function createClient<T, Router extends SafeRouter>() {
 	let nextRequestId = 1
 	const queries = new Map<number, PromiseHandle<unknown>>()
-	const events = new Observable<T>()
-	const requests = new Observable<Request>()
+	let sender: ReturnType<typeof makeMessageSender>
+	const observers: ((value: T) => void)[] = []
+
+	function subscribe(observer: (value: T) => void) {
+		observers.push(observer)
+	}
 
 	function handleMessage(message: ServerMessage<T>) {
 		if ('event' in message) {
-			events.next(message.event)
+			for (const observer of observers) {
+				observer(message.event)
+			}
 			return
 		}
 		const handle = queries.get(message.id)
@@ -73,7 +83,7 @@ export function createClient<T, Router extends SafeRouter>() {
 	function query<P extends unknown[], R>(method: string, params: P) {
 		return new Promise<R>((resolve, reject) => {
 			const id = nextRequestId++
-			requests.next({ id, method, params } satisfies Request<P>)
+			sender({ id, method, params } satisfies Request<P>)
 			queries.set(id, { resolve, reject } as PromiseHandle<unknown>)
 		})
 	}
@@ -90,11 +100,10 @@ export function createClient<T, Router extends SafeRouter>() {
 
 	async function listen(
 		url: string,
-		handler: (
-			connection: WebSocketClientConnection,
-		) => void | PromiseLike<void>,
-		options: WebSocketClientOptions = {},
+		handler: (connection: Connection) => void | PromiseLike<void>,
+		options: Options = {},
 	) {
+		invariant(!sender, 'Already listening')
 		const parser = makeMessageParser()
 		const client = createWebSocketClient({
 			url,
@@ -106,14 +115,14 @@ export function createClient<T, Router extends SafeRouter>() {
 			},
 			...options,
 		})
-		requests.subscribe(makeMessageSender(client.send))
+		sender = makeMessageSender(client.send)
 		setInterval(() => {
 			client.send('heartbeat')
-		}, 20000)
+		}, 15_000)
 		return client.listen()
 	}
 
-	return { router, events, listen }
+	return { router, subscribe, listen }
 }
 
 function getBackoffDelay(attempt: number, options: BackoffOptions) {
@@ -135,6 +144,9 @@ async function connect(
 ) {
 	for (let attempt = 0; ; ) {
 		const ws = new options.WebSocket(url, options.protocols)
+		if (ws.binaryType === 'blob') {
+			ws.binaryType = 'arraybuffer'
+		}
 		try {
 			await Promise.race([
 				options.aborted,
@@ -154,7 +166,9 @@ async function connect(
 				throw error
 			}
 			await Promise.race([
-				sleep(getBackoffDelay(attempt, options.backoff)),
+				new Promise<void>((resolve) => {
+					setTimeout(resolve, getBackoffDelay(attempt, options.backoff))
+				}),
 				options.aborted,
 			])
 		}
@@ -173,15 +187,7 @@ function abortSignalToRejectedPromise(signal?: AbortSignal) {
 	})
 }
 
-export function createWebSocketClient(
-	options: WebSocketClientOptions & {
-		url: string
-		onConnection?: (
-			connection: WebSocketClientConnection,
-		) => void | PromiseLike<void>
-		onMessage: (message: string | Uint8Array, isBinary: boolean) => void
-	},
-) {
+export function createWebSocketClient(options: WebSocketClientOptions) {
 	const aborted = abortSignalToRejectedPromise(options.signal)
 	const backOffOptions = {
 		jitter: false,
@@ -192,9 +198,9 @@ export function createWebSocketClient(
 		timeMultiple: 2,
 		...(options.backoff ?? {}),
 	}
-	let queue: (string | Uint8Array)[] | undefined
-	let connection: WebSocketClientConnection | undefined
-	function send(message: string | Uint8Array) {
+	let queue: SocketData[] | undefined
+	let connection: Connection | undefined
+	function send(message: SocketData) {
 		if (connection) {
 			connection.send(message)
 		} else {
@@ -202,7 +208,7 @@ export function createWebSocketClient(
 			queue.push(message)
 		}
 	}
-	function onMessageEvent(message: MessageEvent<string | Uint8Array>) {
+	function onMessageEvent(message: MessageEvent<SocketData>) {
 		options.onMessage(message.data, typeof message.data !== 'string')
 	}
 	async function listen() {
@@ -230,7 +236,7 @@ export function createWebSocketClient(
 							ws.addEventListener('close', resolve)
 						}),
 					]),
-					send(data: string | Uint8Array) {
+					send(data: SocketData) {
 						ws.send(data)
 					},
 					close(code?: number, reason?: string) {

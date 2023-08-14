@@ -5,13 +5,13 @@ import {
 	type UnsafeRouter,
 	type Request,
 	type Response,
-	RPCClientError,
 	makeMessageParser,
-	stringifySimple,
 	makeMessageSender,
+	stringifySimple,
+	invariant,
 } from './utils.js'
 
-export * from './utils.js'
+export class RPCClientError extends Error {}
 
 function safety<P extends unknown[], R extends Promise<unknown>>(
 	fn: (...args: P) => R,
@@ -31,9 +31,20 @@ export type Connection<T> = {
 	terminate(): void
 }
 
+export type ServerListenOptions<T> = {
+	port?: number
+	signal?: AbortSignal
+	heartbeat?: number
+	authenticate?: (request: http.IncomingMessage) => boolean
+	onRequest?: http.RequestListener
+	onConnection?: (
+		connection: Connection<T>,
+	) => ((event: WebSocket.CloseEvent) => void) | undefined
+}
+
 export function createServer<T>(onError: (error: unknown) => void) {
 	const methods: SafeRouter = {}
-	let wss: WebSocketServer | undefined
+	let wss: WebSocketServer
 
 	function handleMessage(
 		methods: SafeRouter,
@@ -68,7 +79,7 @@ export function createServer<T>(onError: (error: unknown) => void) {
 	}
 
 	function broadcast(event: T) {
-		if (!wss?.clients.size) return
+		if (!wss.clients.size) return
 		const message = stringifySimple({ event })
 		for (const ws of wss.clients) {
 			if (ws.readyState === WebSocket.OPEN) {
@@ -77,32 +88,23 @@ export function createServer<T>(onError: (error: unknown) => void) {
 		}
 	}
 
-	function listen(options: {
-		port?: number
-		signal?: AbortSignal
-		authenticate?: (request: http.IncomingMessage) => boolean
-		onRequest?: http.RequestListener
-		onConnection: (
-			connection: Connection<T>,
-		) => ((event: WebSocket.CloseEvent) => void) | undefined
-	}) {
-		const alive = new WeakSet<WebSocket>()
-		const wss = new WebSocketServer({ noServer: true })
+	function listen(options: ServerListenOptions<T> = {}) {
+		const alive = new WeakMap<WebSocket, number>()
+		wss = new WebSocketServer({ noServer: true })
 		wss.on('connection', (ws) => {
 			const parser = makeMessageParser()
 			const sender = makeMessageSender((data) => {
 				ws.send(data)
 			})
+			alive.set(ws, Date.now())
 			ws.on('message', (data, isBinary) => {
-				if (!Buffer.isBuffer(data)) {
-					throw new Error('Wrong Buffer Type')
-				}
+				invariant(Buffer.isBuffer(data), 'Wrong Buffer Type')
 				const request = parser(data, isBinary) as
 					| Request
 					| 'heartbeat'
 					| undefined
 				if (request === 'heartbeat') {
-					alive.add(ws)
+					alive.set(ws, Date.now())
 					return
 				}
 				if (request === undefined) return
@@ -111,7 +113,7 @@ export function createServer<T>(onError: (error: unknown) => void) {
 					sender(response)
 				})
 			})
-			const unsubscribe = options.onConnection({
+			const unsubscribe = options.onConnection?.({
 				send(event) {
 					sender({ event })
 				},
@@ -127,20 +129,19 @@ export function createServer<T>(onError: (error: unknown) => void) {
 			}
 		})
 		const interval = setInterval(() => {
+			const now = Date.now()
 			for (const ws of wss.clients) {
-				if (!alive.has(ws)) {
+				if (now - alive.get(ws)! >= (options.heartbeat ?? 60_000)) {
 					ws.terminate()
 					continue
 				}
-				alive.delete(ws)
 			}
-		}, 30000)
+		}, 10000)
 		const server = http.createServer(
 			options.onRequest ??
 				((req, res) => {
 					const body = http.STATUS_CODES[426]
 					res.writeHead(426, {
-						// eslint-disable-next-line @typescript-eslint/no-non-null-assertion
 						'Content-Length': body!.length,
 						'Content-Type': 'text/plain',
 					})

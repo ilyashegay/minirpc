@@ -1,7 +1,8 @@
 import http from 'node:http';
 import WebSocket, { WebSocketServer } from 'ws';
-import { RPCClientError, makeMessageParser, stringifySimple, makeMessageSender, } from './utils.js';
-export * from './utils.js';
+import { makeMessageParser, makeMessageSender, stringifySimple, invariant, } from './utils.js';
+export class RPCClientError extends Error {
+}
 function safety(fn) {
     return async (...args) => {
         try {
@@ -43,7 +44,7 @@ export function createServer(onError) {
         return result;
     }
     function broadcast(event) {
-        if (!wss?.clients.size)
+        if (!wss.clients.size)
             return;
         const message = stringifySimple({ event });
         for (const ws of wss.clients) {
@@ -52,21 +53,20 @@ export function createServer(onError) {
             }
         }
     }
-    function listen(options) {
-        const alive = new WeakSet();
-        const wss = new WebSocketServer({ noServer: true });
+    function listen(options = {}) {
+        const alive = new WeakMap();
+        wss = new WebSocketServer({ noServer: true });
         wss.on('connection', (ws) => {
             const parser = makeMessageParser();
             const sender = makeMessageSender((data) => {
                 ws.send(data);
             });
+            alive.set(ws, Date.now());
             ws.on('message', (data, isBinary) => {
-                if (!Buffer.isBuffer(data)) {
-                    throw new Error('Wrong Buffer Type');
-                }
+                invariant(Buffer.isBuffer(data), 'Wrong Buffer Type');
                 const request = parser(data, isBinary);
                 if (request === 'heartbeat') {
-                    alive.add(ws);
+                    alive.set(ws, Date.now());
                     return;
                 }
                 if (request === undefined)
@@ -77,7 +77,7 @@ export function createServer(onError) {
                     sender(response);
                 });
             });
-            const unsubscribe = options.onConnection({
+            const unsubscribe = options.onConnection?.({
                 send(event) {
                     sender({ event });
                 },
@@ -93,19 +93,18 @@ export function createServer(onError) {
             }
         });
         const interval = setInterval(() => {
+            const now = Date.now();
             for (const ws of wss.clients) {
-                if (!alive.has(ws)) {
+                if (now - alive.get(ws) >= (options.heartbeat ?? 60_000)) {
                     ws.terminate();
                     continue;
                 }
-                alive.delete(ws);
             }
-        }, 30000);
+        }, 10000);
         const server = http.createServer(options.onRequest ??
             ((req, res) => {
                 const body = http.STATUS_CODES[426];
                 res.writeHead(426, {
-                    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
                     'Content-Length': body.length,
                     'Content-Type': 'text/plain',
                 });

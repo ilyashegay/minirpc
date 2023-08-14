@@ -1,16 +1,20 @@
-import { type SafeRouter, Observable } from './utils.js';
-export * from './utils.js';
-export type WebSocketClientOptions = {
+import { type SafeRouter, type SocketData } from './utils.js';
+export type Options = {
     protocols?: string[];
     signal?: AbortSignal;
     backoff?: BackoffOptions;
     WebSocket?: WebSocketLike;
 };
-export type WebSocketClientConnection = {
+export type WebSocketClientOptions = Options & {
+    url: string;
+    onConnection?: (connection: Connection) => void | PromiseLike<void>;
+    onMessage: (message: SocketData, isBinary: boolean) => void;
+};
+export type Connection = {
     protocol: string;
     extensions: string;
     closed: Promise<CloseEvent>;
-    send(message: string | Uint8Array): void;
+    send(message: SocketData): void;
     close(code?: number, reason?: string): void;
 };
 type WebSocketLike = new (url: string, protocols?: string | string[]) => WebSocket;
@@ -24,14 +28,11 @@ type BackoffOptions = {
 };
 export declare function createClient<T, Router extends SafeRouter>(): {
     router: Router;
-    events: Observable<T>;
-    listen: (url: string, handler: (connection: WebSocketClientConnection) => void | PromiseLike<void>, options?: WebSocketClientOptions) => Promise<void>;
+    subscribe: (observer: (value: T) => void) => void;
+    listen: (url: string, handler: (connection: Connection) => void | PromiseLike<void>, options?: Options) => Promise<void>;
 };
-export declare function createWebSocketClient(options: WebSocketClientOptions & {
-    url: string;
-    onConnection?: (connection: WebSocketClientConnection) => void | PromiseLike<void>;
-    onMessage: (message: string | Uint8Array, isBinary: boolean) => void;
-}): {
-    send: (message: string | Uint8Array) => void;
+export declare function createWebSocketClient(options: WebSocketClientOptions): {
+    send: (message: SocketData) => void;
     listen: () => Promise<void>;
 };
+export {};

@@ -29,7 +29,6 @@ await server.listen({
 	port: 3000,
 	signal: new AbortController().signal,
 	authenticate(request) {
-		// eslint-disable-next-line @typescript-eslint/no-non-null-assertion
 		const url = new URL(request.url!)
 		return url.searchParams.get('key') === 'password'
 	},
@@ -55,7 +54,7 @@ import { createClient } from '../lib/client'
 const client = createClient<Alert, Router>()
 const api = client.router
 
-client.events.subscribe((event) => {
+client.subscribe((event) => {
 	console.log(event) // { type: 'greeting', name: string }
 })
 

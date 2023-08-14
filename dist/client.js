@@ -1,13 +1,17 @@
-import { Observable, sleep, makeMessageParser, makeMessageSender, } from './utils.js';
-export * from './utils.js';
+import { makeMessageParser, makeMessageSender, invariant, } from './utils.js';
 export function createClient() {
     let nextRequestId = 1;
     const queries = new Map();
-    const events = new Observable();
-    const requests = new Observable();
+    let sender;
+    const observers = [];
+    function subscribe(observer) {
+        observers.push(observer);
+    }
     function handleMessage(message) {
         if ('event' in message) {
-            events.next(message.event);
+            for (const observer of observers) {
+                observer(message.event);
+            }
             return;
         }
         const handle = queries.get(message.id);
@@ -26,7 +30,7 @@ export function createClient() {
     function query(method, params) {
         return new Promise((resolve, reject) => {
             const id = nextRequestId++;
-            requests.next({ id, method, params });
+            sender({ id, method, params });
             queries.set(id, { resolve, reject });
         });
     }
@@ -40,6 +44,7 @@ export function createClient() {
         },
     });
     async function listen(url, handler, options = {}) {
+        invariant(!sender, 'Already listening');
         const parser = makeMessageParser();
         const client = createWebSocketClient({
             url,
@@ -52,13 +57,13 @@ export function createClient() {
             },
             ...options,
         });
-        requests.subscribe(makeMessageSender(client.send));
+        sender = makeMessageSender(client.send);
         setInterval(() => {
             client.send('heartbeat');
-        }, 20000);
+        }, 15_000);
         return client.listen();
     }
-    return { router, events, listen };
+    return { router, subscribe, listen };
 }
 function getBackoffDelay(attempt, options) {
     const delay = Math.min(options.startingDelay * Math.pow(options.timeMultiple, attempt), options.maxDelay);
@@ -67,6 +72,9 @@ function getBackoffDelay(attempt, options) {
 async function connect(url, options) {
     for (let attempt = 0;;) {
         const ws = new options.WebSocket(url, options.protocols);
+        if (ws.binaryType === 'blob') {
+            ws.binaryType = 'arraybuffer';
+        }
         try {
             await Promise.race([
                 options.aborted,
@@ -87,7 +95,9 @@ async function connect(url, options) {
                 throw error;
             }
             await Promise.race([
-                sleep(getBackoffDelay(attempt, options.backoff)),
+                new Promise((resolve) => {
+                    setTimeout(resolve, getBackoffDelay(attempt, options.backoff));
+                }),
                 options.aborted,
             ]);
         }
