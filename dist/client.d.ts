@@ -1,4 +1,4 @@
-import { type SafeRouter, type SocketData } from './utils.js';
+import { type ClientRoutes, type SocketData } from './utils.js';
 export type Options = {
     protocols?: string[];
     signal?: AbortSignal;
@@ -26,9 +26,9 @@ type BackoffOptions = {
     startingDelay: number;
     timeMultiple: number;
 };
-export declare function createClient<T, Router extends SafeRouter>(): {
+export declare function createClient<Router extends ClientRoutes>(): {
     router: Router;
-    subscribe: (observer: (value: T) => void) => void;
+    subscribe: <T>(observer: (value: T) => void, signal?: AbortSignal) => void;
     listen: (url: string, handler: (connection: Connection) => void | PromiseLike<void>, options?: Options) => Promise<void>;
 };
 export declare function createWebSocketClient(options: WebSocketClientOptions): {

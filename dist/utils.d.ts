@@ -15,14 +15,14 @@ type EventMessage<T> = {
     event: T;
 };
 export type Response = ResultResponse | ErrorResponse;
-export type ServerMessage<T> = Response | EventMessage<T>;
+export type ServerMessage<T = unknown> = Response | EventMessage<T>;
 export type SocketData = string | ArrayBuffer | ArrayBufferView;
-export type UnsafeRouter = Record<string, (...args: any[]) => any>;
-export type SafeRouter<R extends UnsafeRouter = UnsafeRouter> = {
+export type ServerRoutes = Record<string, (...args: any[]) => any>;
+export type ClientRoutes<R extends ServerRoutes = ServerRoutes> = {
     [key in keyof R]: (...args: Parameters<R[key]>) => Promise<Awaited<ReturnType<R[key]>>>;
 };
 export declare function invariant(condition: unknown, message?: string): asserts condition;
-export declare function makeMessageParser(): (data: SocketData, isBinary: boolean) => Request | ServerMessage<unknown> | 'heartbeat' | undefined;
-export declare function makeMessageSender(send: (data: SocketData) => void): (message: Request | ServerMessage<unknown>) => void;
+export declare function makeMessageParser(): (data: SocketData, isBinary: boolean) => Request | ServerMessage | 'heartbeat' | undefined;
+export declare function makeMessageSender(send: (data: SocketData) => void): (message: Request | ServerMessage) => void;
 export declare function stringifySimple(value: unknown): string;
 export {};

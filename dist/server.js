@@ -3,45 +3,16 @@ import WebSocket, { WebSocketServer } from 'ws';
 import { makeMessageParser, makeMessageSender, stringifySimple, invariant, } from './utils.js';
 export class RPCClientError extends Error {
 }
-function safety(fn) {
-    return async (...args) => {
-        try {
-            return await fn(...args);
-        }
-        catch (error) {
-            return Promise.reject(error);
-        }
-    };
-}
 export function createServer(onError) {
     const methods = {};
     let wss;
-    function handleMessage(methods, request, callback) {
-        if (!(request.method in methods)) {
-            callback({ id: request.id, error: `Unknown method: ${request.method}` });
-            return;
-        }
-        methods[request.method](...request.params)
-            .then((result) => {
-            callback({ id: request.id, result: result ?? null });
-        })
-            .catch((error) => {
-            let message = true;
-            if (error instanceof RPCClientError) {
-                message = error.message;
-                error = undefined;
-            }
-            callback({ id: request.id, error: message }, error);
-        });
-    }
-    function router(router) {
-        const result = {};
-        for (const key of Object.keys(router)) {
+    function router(routes) {
+        for (const key of Object.keys(routes)) {
             if (key in methods)
                 throw new Error(`Duplicate method ${key}`);
-            methods[key] = result[key] = safety(router[key]);
+            methods[key] = routes[key];
         }
-        return result;
+        return {};
     }
     function broadcast(event) {
         if (!wss.clients.size)
@@ -54,53 +25,65 @@ export function createServer(onError) {
         }
     }
     function listen(options = {}) {
-        const alive = new WeakMap();
+        invariant(!wss, 'Already Listening');
+        const heartbeats = new WeakMap();
         wss = new WebSocketServer({ noServer: true });
         wss.on('connection', (ws) => {
             const parser = makeMessageParser();
             const sender = makeMessageSender((data) => {
                 ws.send(data);
             });
-            alive.set(ws, Date.now());
-            ws.on('message', (data, isBinary) => {
+            heartbeats.set(ws, Date.now());
+            // eslint-disable-next-line @typescript-eslint/no-misused-promises
+            ws.on('message', async (data, isBinary) => {
                 invariant(Buffer.isBuffer(data), 'Wrong Buffer Type');
                 const request = parser(data, isBinary);
                 if (request === 'heartbeat') {
-                    alive.set(ws, Date.now());
+                    heartbeats.set(ws, Date.now());
                     return;
                 }
                 if (request === undefined)
                     return;
-                handleMessage(methods, request, (response, error) => {
-                    if (error)
+                try {
+                    const { id, method, params } = request;
+                    if (method in methods) {
+                        const result = await methods[method](...params);
+                        sender({ id, result: result ?? null });
+                    }
+                    else {
+                        sender({ id, error: `Unknown method: ${method}` });
+                    }
+                }
+                catch (error) {
+                    if (error instanceof RPCClientError) {
+                        sender({ id: request.id, error: error.message });
+                    }
+                    else {
+                        sender({ id: request.id, error: true });
                         onError(error);
-                    sender(response);
-                });
+                    }
+                }
             });
             const unsubscribe = options.onConnection?.({
-                send(event) {
+                send: (event) => {
                     sender({ event });
                 },
-                close(code, data) {
-                    ws.close(code, data);
-                },
-                terminate() {
-                    ws.terminate();
-                },
+                close: ws.close.bind(ws),
+                terminate: ws.terminate.bind(ws),
             });
             if (unsubscribe) {
                 ws.once('close', unsubscribe);
             }
         });
         const interval = setInterval(() => {
-            const now = Date.now();
+            const limit = Date.now() - (options.heartbeat ?? 60e3);
             for (const ws of wss.clients) {
-                if (now - alive.get(ws) >= (options.heartbeat ?? 60_000)) {
+                if (heartbeats.get(ws) < limit) {
                     ws.terminate();
                     continue;
                 }
             }
-        }, 10000);
+        }, 10e3);
         const server = http.createServer(options.onRequest ??
             ((req, res) => {
                 const body = http.STATUS_CODES[426];

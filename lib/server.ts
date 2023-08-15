@@ -1,10 +1,9 @@
 import http from 'node:http'
 import WebSocket, { WebSocketServer } from 'ws'
 import {
-	type SafeRouter,
-	type UnsafeRouter,
+	type ClientRoutes,
+	type ServerRoutes,
 	type Request,
-	type Response,
 	makeMessageParser,
 	makeMessageSender,
 	stringifySimple,
@@ -13,25 +12,13 @@ import {
 
 export class RPCClientError extends Error {}
 
-function safety<P extends unknown[], R extends Promise<unknown>>(
-	fn: (...args: P) => R,
-) {
-	return async (...args: P) => {
-		try {
-			return await fn(...args)
-		} catch (error) {
-			return Promise.reject<R>(error)
-		}
-	}
-}
-
 export type Connection<T> = {
-	send(event: T): void
-	close(code?: number, data?: string | Buffer): void
-	terminate(): void
+	send: (event: T) => void
+	close: (code?: number, data?: string | Buffer) => void
+	terminate: () => void
 }
 
-export type ServerListenOptions<T> = {
+export type Options<T> = {
 	port?: number
 	signal?: AbortSignal
 	heartbeat?: number
@@ -43,39 +30,15 @@ export type ServerListenOptions<T> = {
 }
 
 export function createServer<T>(onError: (error: unknown) => void) {
-	const methods: SafeRouter = {}
+	const methods: ServerRoutes = {}
 	let wss: WebSocketServer
 
-	function handleMessage(
-		methods: SafeRouter,
-		request: Request,
-		callback: (response: Response, error?: unknown) => void,
-	) {
-		if (!(request.method in methods)) {
-			callback({ id: request.id, error: `Unknown method: ${request.method}` })
-			return
-		}
-		methods[request.method](...request.params)
-			.then((result) => {
-				callback({ id: request.id, result: result ?? null })
-			})
-			.catch((error: unknown) => {
-				let message: string | true = true
-				if (error instanceof RPCClientError) {
-					message = error.message
-					error = undefined
-				}
-				callback({ id: request.id, error: message }, error)
-			})
-	}
-
-	function router<Router extends UnsafeRouter>(router: Router) {
-		const result = {} as SafeRouter<Router>
-		for (const key of Object.keys(router)) {
+	function router<Routes extends ServerRoutes>(routes: Routes) {
+		for (const key of Object.keys(routes)) {
 			if (key in methods) throw new Error(`Duplicate method ${key}`)
-			methods[key] = result[key as keyof Router] = safety(router[key])
+			methods[key] = routes[key]
 		}
-		return result
+		return {} as ClientRoutes<Routes>
 	}
 
 	function broadcast(event: T) {
@@ -88,55 +51,65 @@ export function createServer<T>(onError: (error: unknown) => void) {
 		}
 	}
 
-	function listen(options: ServerListenOptions<T> = {}) {
-		const alive = new WeakMap<WebSocket, number>()
+	function listen(options: Options<T> = {}) {
+		invariant(!wss, 'Already Listening')
+		const heartbeats = new WeakMap<WebSocket, number>()
 		wss = new WebSocketServer({ noServer: true })
 		wss.on('connection', (ws) => {
 			const parser = makeMessageParser()
 			const sender = makeMessageSender((data) => {
 				ws.send(data)
 			})
-			alive.set(ws, Date.now())
-			ws.on('message', (data, isBinary) => {
+			heartbeats.set(ws, Date.now())
+			// eslint-disable-next-line @typescript-eslint/no-misused-promises
+			ws.on('message', async (data, isBinary) => {
 				invariant(Buffer.isBuffer(data), 'Wrong Buffer Type')
 				const request = parser(data, isBinary) as
 					| Request
 					| 'heartbeat'
 					| undefined
 				if (request === 'heartbeat') {
-					alive.set(ws, Date.now())
+					heartbeats.set(ws, Date.now())
 					return
 				}
 				if (request === undefined) return
-				handleMessage(methods, request, (response, error) => {
-					if (error) onError(error)
-					sender(response)
-				})
+				try {
+					const { id, method, params } = request
+					if (method in methods) {
+						const result: unknown = await methods[method](...params)
+						sender({ id, result: result ?? null })
+					} else {
+						sender({ id, error: `Unknown method: ${method}` })
+					}
+				} catch (error) {
+					if (error instanceof RPCClientError) {
+						sender({ id: request.id, error: error.message })
+					} else {
+						sender({ id: request.id, error: true })
+						onError(error)
+					}
+				}
 			})
 			const unsubscribe = options.onConnection?.({
-				send(event) {
+				send: (event) => {
 					sender({ event })
 				},
-				close(code, data) {
-					ws.close(code, data)
-				},
-				terminate() {
-					ws.terminate()
-				},
+				close: ws.close.bind(ws),
+				terminate: ws.terminate.bind(ws),
 			})
 			if (unsubscribe) {
 				ws.once('close', unsubscribe)
 			}
 		})
 		const interval = setInterval(() => {
-			const now = Date.now()
+			const limit = Date.now() - (options.heartbeat ?? 60e3)
 			for (const ws of wss.clients) {
-				if (now - alive.get(ws)! >= (options.heartbeat ?? 60_000)) {
+				if (heartbeats.get(ws)! < limit) {
 					ws.terminate()
 					continue
 				}
 			}
-		}, 10000)
+		}, 10e3)
 		const server = http.createServer(
 			options.onRequest ??
 				((req, res) => {

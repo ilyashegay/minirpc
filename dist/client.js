@@ -1,11 +1,16 @@
 import { makeMessageParser, makeMessageSender, invariant, } from './utils.js';
 export function createClient() {
     let nextRequestId = 1;
-    const queries = new Map();
     let sender;
-    const observers = [];
-    function subscribe(observer) {
-        observers.push(observer);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const queries = new Map();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const observers = new Set();
+    function subscribe(observer, signal) {
+        observers.add(observer);
+        signal?.addEventListener('abort', () => {
+            observers.delete(observer);
+        });
     }
     function handleMessage(message) {
         if ('event' in message) {

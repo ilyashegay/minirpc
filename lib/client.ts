@@ -1,6 +1,5 @@
 import {
-	type SafeRouter,
-	type Request,
+	type ClientRoutes,
 	type ServerMessage,
 	type SocketData,
 	makeMessageParser,
@@ -48,17 +47,22 @@ type PromiseHandle<T> = {
 	reject: Parameters<ConstructorParameters<typeof Promise<T>>[0]>[1]
 }
 
-export function createClient<T, Router extends SafeRouter>() {
+export function createClient<Router extends ClientRoutes>() {
 	let nextRequestId = 1
-	const queries = new Map<number, PromiseHandle<unknown>>()
 	let sender: ReturnType<typeof makeMessageSender>
-	const observers: ((value: T) => void)[] = []
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	const queries = new Map<number, PromiseHandle<any>>()
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	const observers = new Set<(value: any) => void>()
 
-	function subscribe(observer: (value: T) => void) {
-		observers.push(observer)
+	function subscribe<T>(observer: (value: T) => void, signal?: AbortSignal) {
+		observers.add(observer)
+		signal?.addEventListener('abort', () => {
+			observers.delete(observer)
+		})
 	}
 
-	function handleMessage(message: ServerMessage<T>) {
+	function handleMessage(message: ServerMessage) {
 		if ('event' in message) {
 			for (const observer of observers) {
 				observer(message.event)
@@ -83,8 +87,8 @@ export function createClient<T, Router extends SafeRouter>() {
 	function query<P extends unknown[], R>(method: string, params: P) {
 		return new Promise<R>((resolve, reject) => {
 			const id = nextRequestId++
-			sender({ id, method, params } satisfies Request<P>)
-			queries.set(id, { resolve, reject } as PromiseHandle<unknown>)
+			sender({ id, method, params })
+			queries.set(id, { resolve, reject })
 		})
 	}
 
@@ -109,7 +113,7 @@ export function createClient<T, Router extends SafeRouter>() {
 			url,
 			onConnection: handler,
 			onMessage(data, isBinary) {
-				const message = parser(data, isBinary) as ServerMessage<T> | undefined
+				const message = parser(data, isBinary) as ServerMessage | undefined
 				if (message === undefined) return
 				handleMessage(message)
 			},

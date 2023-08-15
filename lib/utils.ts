@@ -26,14 +26,14 @@ type StreamMessage =
 	| { id: number; stream: 'error'; error: string }
 
 export type Response = ResultResponse | ErrorResponse
-export type ServerMessage<T> = Response | EventMessage<T>
+export type ServerMessage<T = unknown> = Response | EventMessage<T>
 
 export type SocketData = string | ArrayBuffer | ArrayBufferView
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-export type UnsafeRouter = Record<string, (...args: any[]) => any>
+export type ServerRoutes = Record<string, (...args: any[]) => any>
 
-export type SafeRouter<R extends UnsafeRouter = UnsafeRouter> = {
+export type ClientRoutes<R extends ServerRoutes = ServerRoutes> = {
 	[key in keyof R]: (
 		...args: Parameters<R[key]>
 	) => Promise<Awaited<ReturnType<R[key]>>>
@@ -59,7 +59,7 @@ export function makeMessageParser() {
 	return function parse(
 		data: SocketData,
 		isBinary: boolean,
-	): Request | ServerMessage<unknown> | 'heartbeat' | undefined {
+	): Request | ServerMessage | 'heartbeat' | undefined {
 		if (isBinary) {
 			invariant(activeId !== undefined, 'Unexpected binary message')
 			const stream = streams.get(activeId)
@@ -121,9 +121,7 @@ export function makeMessageParser() {
 			},
 		}
 		if (Array.isArray(json)) {
-			return devalue.unflatten(json, revivers) as
-				| Request
-				| ServerMessage<unknown>
+			return devalue.unflatten(json, revivers) as Request | ServerMessage
 		}
 	}
 }
@@ -169,7 +167,7 @@ export function makeMessageSender(send: (data: SocketData) => void) {
 		}
 	}
 
-	return (message: Request | ServerMessage<unknown>) => {
+	return (message: Request | ServerMessage) => {
 		send(
 			devalue.stringify(message, {
 				URL: (val) => val instanceof URL && val.href,
