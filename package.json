@@ -3,8 +3,14 @@
 	"version": "0.0.1",
 	"type": "module",
 	"exports": {
-		"./client": "./dist/client.js",
-		"./server": "./dist/server.js"
+		"./client": {
+			"types": "./dist/client.d.ts",
+			"default": "./dist/client.js"
+		},
+		"./server": {
+			"types": "./dist/server.d.ts",
+			"default": "./dist/server.js"
+		}
 	},
 	"license": "MIT",
 	"repository": "https://github.com/ilyashegay/minirpc",

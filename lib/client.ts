@@ -10,7 +10,7 @@ import {
 export type Options = {
 	protocols?: string[]
 	signal?: AbortSignal
-	backoff?: BackoffOptions
+	backoff?: Partial<BackoffOptions>
 	WebSocket?: WebSocketLike
 }
 
@@ -255,6 +255,7 @@ export function createWebSocketClient(options: WebSocketClientOptions) {
 			if (error instanceof DOMException && error.name === 'AbortError') {
 				return
 			}
+			throw error
 		} finally {
 			connection?.close()
 		}

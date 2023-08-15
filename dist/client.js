@@ -186,6 +186,7 @@ export function createWebSocketClient(options) {
             if (error instanceof DOMException && error.name === 'AbortError') {
                 return;
             }
+            throw error;
         }
         finally {
             connection?.close();

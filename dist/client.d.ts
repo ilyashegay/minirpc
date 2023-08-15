@@ -2,7 +2,7 @@ import { type ClientRoutes, type SocketData } from './utils.js';
 export type Options = {
     protocols?: string[];
     signal?: AbortSignal;
-    backoff?: BackoffOptions;
+    backoff?: Partial<BackoffOptions>;
     WebSocket?: WebSocketLike;
 };
 export type WebSocketClientOptions = Options & {
