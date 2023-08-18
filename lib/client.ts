@@ -1,37 +1,24 @@
+import { connect, type Connection } from 'connect'
 import {
 	type ClientRoutes,
-	type ServerMessage,
 	type SocketData,
-	makeMessageParser,
-	makeMessageSender,
+	makeClientMessenger,
 	invariant,
 } from './utils.js'
+
+export { type Connection }
 
 export type Options = {
 	protocols?: string[]
 	signal?: AbortSignal
 	backoff?: Partial<BackoffOptions>
-	WebSocket?: WebSocketLike
 }
 
 export type WebSocketClientOptions = Options & {
 	url: string
 	onConnection?: (connection: Connection) => void | PromiseLike<void>
-	onMessage: (message: SocketData, isBinary: boolean) => void
+	onMessage: (message: SocketData) => void
 }
-
-export type Connection = {
-	protocol: string
-	extensions: string
-	closed: Promise<CloseEvent>
-	send(message: SocketData): void
-	close(code?: number, reason?: string): void
-}
-
-type WebSocketLike = new (
-	url: string,
-	protocols?: string | string[],
-) => WebSocket
 
 type BackoffOptions = {
 	jitter: boolean
@@ -49,7 +36,7 @@ type PromiseHandle<T> = {
 
 export function createClient<Router extends ClientRoutes>() {
 	let nextRequestId = 1
-	let sender: ReturnType<typeof makeMessageSender>
+	let messenger: ReturnType<typeof makeClientMessenger>
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	const queries = new Map<number, PromiseHandle<any>>()
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -62,32 +49,10 @@ export function createClient<Router extends ClientRoutes>() {
 		})
 	}
 
-	function handleMessage(message: ServerMessage) {
-		if ('event' in message) {
-			for (const observer of observers) {
-				observer(message.event)
-			}
-			return
-		}
-		const handle = queries.get(message.id)
-		if (!handle) {
-			console.error(`Unknown response ID: ${message.id}`)
-			return
-		}
-		queries.delete(message.id)
-		if ('result' in message) {
-			handle.resolve(message.result)
-		} else {
-			handle.reject(
-				typeof message.error === 'string' ? message.error : 'request failed',
-			)
-		}
-	}
-
 	function query<P extends unknown[], R>(method: string, params: P) {
 		return new Promise<R>((resolve, reject) => {
 			const id = nextRequestId++
-			sender({ id, method, params })
+			messenger.send({ id, method, params })
 			queries.set(id, { resolve, reject })
 		})
 	}
@@ -107,92 +72,93 @@ export function createClient<Router extends ClientRoutes>() {
 		handler: (connection: Connection) => void | PromiseLike<void>,
 		options: Options = {},
 	) {
-		invariant(!sender, 'Already listening')
-		const parser = makeMessageParser()
+		invariant(!messenger, 'Already listening')
 		const client = createWebSocketClient({
 			url,
-			onConnection: handler,
-			onMessage(data, isBinary) {
-				const message = parser(data, isBinary) as ServerMessage | undefined
+			async onConnection(connection) {
+				try {
+					messenger.open()
+					await handler(connection)
+				} finally {
+					messenger.close()
+					for (const handle of queries.values()) {
+						handle.reject(new DOMException('Connection closed'))
+					}
+				}
+			},
+			onMessage(data) {
+				const message = messenger.parse(data)
 				if (message === undefined) return
-				handleMessage(message)
+				if ('event' in message) {
+					for (const observer of observers) {
+						observer(message.event)
+					}
+					return
+				}
+				const handle = queries.get(message.id)
+				if (!handle) {
+					console.error(`Unknown response ID: ${message.id}`)
+					return
+				}
+				queries.delete(message.id)
+				if ('result' in message) {
+					handle.resolve(message.result)
+				} else {
+					handle.reject(
+						typeof message.error === 'string'
+							? message.error
+							: 'request failed',
+					)
+				}
 			},
 			...options,
 		})
-		sender = makeMessageSender(client.send)
-		setInterval(() => {
-			client.send('heartbeat')
-		}, 15_000)
+		messenger = makeClientMessenger(client.send)
 		return client.listen()
 	}
 
 	return { router, subscribe, listen }
 }
 
-function getBackoffDelay(attempt: number, options: BackoffOptions) {
-	const delay = Math.min(
-		options.startingDelay * Math.pow(options.timeMultiple, attempt),
+async function backoff(
+	error: unknown,
+	attempt: number,
+	options: BackoffOptions,
+	signal: AbortSignal,
+) {
+	signal.throwIfAborted()
+	const shouldRetry = await options.retry(error, attempt)
+	if (!shouldRetry || attempt >= options.numOfAttempts) {
+		throw error
+	}
+	let delay = Math.min(
+		options.startingDelay * Math.pow(options.timeMultiple, attempt - 1),
 		options.maxDelay,
 	)
-	return options.jitter ? Math.round(Math.random() * delay) : delay
-}
-
-async function connect(
-	url: string,
-	options: {
-		WebSocket: WebSocketLike
-		aborted: Promise<never>
-		protocols?: string | string[]
-		backoff: BackoffOptions
-	},
-) {
-	for (let attempt = 0; ; ) {
-		const ws = new options.WebSocket(url, options.protocols)
-		if (ws.binaryType === 'blob') {
-			ws.binaryType = 'arraybuffer'
-		}
-		try {
-			await Promise.race([
-				options.aborted,
-				new Promise<void>((resolve, reject) => {
-					ws.addEventListener('open', () => {
-						resolve()
-						ws.removeEventListener('error', reject)
-					})
-					ws.addEventListener('error', reject)
-				}),
-			])
-			return ws
-		} catch (error) {
-			attempt++
-			const shouldRetry = await options.backoff.retry(error, attempt)
-			if (!shouldRetry || attempt >= options.backoff.numOfAttempts) {
-				throw error
-			}
-			await Promise.race([
-				new Promise<void>((resolve) => {
-					setTimeout(resolve, getBackoffDelay(attempt, options.backoff))
-				}),
-				options.aborted,
-			])
-		}
+	if (options.jitter) {
+		delay = Math.round(Math.random() * delay)
 	}
-}
-
-function abortSignalToRejectedPromise(signal?: AbortSignal) {
-	if (!signal) return new Promise<never>(() => undefined)
-	if (signal.aborted) {
-		throw new DOMException('This operation was aborted', 'AbortError')
-	}
-	return new Promise<never>((_, reject) => {
-		signal.addEventListener('abort', () => {
-			reject(new DOMException('This operation was aborted', 'AbortError'))
-		})
+	await new Promise<void>((resolve, reject) => {
+		const timeout = setTimeout(() => {
+			signal.removeEventListener('abort', onAbort)
+			resolve()
+		}, delay)
+		const onAbort = () => {
+			clearTimeout(timeout)
+			reject(signal.reason)
+		}
+		signal.addEventListener('abort', onAbort)
 	})
 }
 
 export function createWebSocketClient(options: WebSocketClientOptions) {
-	const aborted = abortSignalToRejectedPromise(options.signal)
+	const abortController = new AbortController()
+	if (options.signal) {
+		options.signal.throwIfAborted()
+		options.signal.addEventListener('abort', () => {
+			abortController.abort()
+		})
+	}
 	const backOffOptions = {
 		jitter: false,
 		maxDelay: Infinity,
@@ -204,48 +170,42 @@ export function createWebSocketClient(options: WebSocketClientOptions) {
 	}
 	let queue: SocketData[] | undefined
 	let connection: Connection | undefined
-	function send(message: SocketData) {
+	function send(message: SocketData, enqueue = false) {
 		if (connection) {
 			connection.send(message)
-		} else {
+		} else if (enqueue) {
 			queue ??= []
 			queue.push(message)
+		} else {
+			throw new Error('no websocket connection')
 		}
-	}
-	function onMessageEvent(message: MessageEvent<SocketData>) {
-		options.onMessage(message.data, typeof message.data !== 'string')
 	}
 	async function listen() {
 		try {
 			for (;;) {
-				const ws = await connect(options.url, {
-					WebSocket: options.WebSocket ?? WebSocket,
-					aborted,
-					protocols: options.protocols,
-					backoff: backOffOptions,
-				})
-				ws.addEventListener('message', onMessageEvent)
+				for (let attempt = 0; ; ) {
+					try {
+						connection = await connect(
+							options.url,
+							options.protocols,
+							options.onMessage,
+							abortController.signal,
+						)
+						break
+					} catch (error) {
+						await backoff(
+							error,
+							++attempt,
+							backOffOptions,
+							abortController.signal,
+						)
+					}
+				}
 				if (queue?.length) {
 					for (const message of queue) {
-						ws.send(message)
+						connection.send(message)
 					}
 					queue = undefined
-				}
-				connection = {
-					protocol: ws.protocol,
-					extensions: ws.extensions,
-					closed: Promise.race([
-						aborted,
-						new Promise<CloseEvent>((resolve) => {
-							ws.addEventListener('close', resolve)
-						}),
-					]),
-					send(data: SocketData) {
-						ws.send(data)
-					},
-					close(code?: number, reason?: string) {
-						ws.close(code, reason)
-					},
 				}
 				await options.onConnection?.(connection)
 				await connection.closed

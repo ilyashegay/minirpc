@@ -1,0 +1,14 @@
+{
+	"name": "connect",
+	"version": "0.0.1",
+	"type": "module",
+	"browser": "browser.js",
+	"main": "node.js",
+	"types": "index.d.ts",
+	"dependencies": {
+		"ws": "^8.13.0"
+	},
+	"devDependencies": {
+		"@types/ws": "^8.5.5"
+	}
+}

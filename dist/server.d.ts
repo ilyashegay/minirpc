@@ -1,7 +1,6 @@
 /// <reference types="node" />
 /// <reference types="node" />
 import http from 'node:http';
-import WebSocket from 'ws';
 import { type ClientRoutes, type ServerRoutes } from './utils.js';
 export declare class RPCClientError extends Error {
 }
@@ -16,7 +15,10 @@ export type Options<T> = {
     heartbeat?: number;
     authenticate?: (request: http.IncomingMessage) => boolean;
     onRequest?: http.RequestListener;
-    onConnection?: (connection: Connection<T>) => ((event: WebSocket.CloseEvent) => void) | undefined;
+    onConnection?: (connection: Connection<T>) => ((event: {
+        code: number;
+        reason: string;
+    }) => void) | undefined;
 };
 export declare function createServer<T>(onError: (error: unknown) => void): {
     router: <Routes extends ServerRoutes>(routes: Routes) => ClientRoutes<Routes>;

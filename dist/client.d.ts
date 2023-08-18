@@ -1,23 +1,16 @@
+import { type Connection } from 'connect';
 import { type ClientRoutes, type SocketData } from './utils.js';
+export { type Connection };
 export type Options = {
     protocols?: string[];
     signal?: AbortSignal;
     backoff?: Partial<BackoffOptions>;
-    WebSocket?: WebSocketLike;
 };
 export type WebSocketClientOptions = Options & {
     url: string;
     onConnection?: (connection: Connection) => void | PromiseLike<void>;
-    onMessage: (message: SocketData, isBinary: boolean) => void;
+    onMessage: (message: SocketData) => void;
 };
-export type Connection = {
-    protocol: string;
-    extensions: string;
-    closed: Promise<CloseEvent>;
-    send(message: SocketData): void;
-    close(code?: number, reason?: string): void;
-};
-type WebSocketLike = new (url: string, protocols?: string | string[]) => WebSocket;
 type BackoffOptions = {
     jitter: boolean;
     maxDelay: number;
@@ -32,7 +25,6 @@ export declare function createClient<Router extends ClientRoutes>(): {
     listen: (url: string, handler: (connection: Connection) => void | PromiseLike<void>, options?: Options) => Promise<void>;
 };
 export declare function createWebSocketClient(options: WebSocketClientOptions): {
-    send: (message: SocketData) => void;
+    send: (message: SocketData, enqueue?: boolean) => void;
     listen: () => Promise<void>;
 };
-export {};

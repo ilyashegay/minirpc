@@ -1,7 +1,9 @@
-import { makeMessageParser, makeMessageSender, invariant, } from './utils.js';
+import { connect } from 'connect';
+import { makeClientMessenger, invariant, } from './utils.js';
+export {};
 export function createClient() {
     let nextRequestId = 1;
-    let sender;
+    let messenger;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const queries = new Map();
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -12,30 +14,10 @@ export function createClient() {
             observers.delete(observer);
         });
     }
-    function handleMessage(message) {
-        if ('event' in message) {
-            for (const observer of observers) {
-                observer(message.event);
-            }
-            return;
-        }
-        const handle = queries.get(message.id);
-        if (!handle) {
-            console.error(`Unknown response ID: ${message.id}`);
-            return;
-        }
-        queries.delete(message.id);
-        if ('result' in message) {
-            handle.resolve(message.result);
-        }
-        else {
-            handle.reject(typeof message.error === 'string' ? message.error : 'request failed');
-        }
-    }
     function query(method, params) {
         return new Promise((resolve, reject) => {
             const id = nextRequestId++;
-            sender({ id, method, params });
+            messenger.send({ id, method, params });
             queries.set(id, { resolve, reject });
         });
     }
@@ -49,79 +31,83 @@ export function createClient() {
         },
     });
     async function listen(url, handler, options = {}) {
-        invariant(!sender, 'Already listening');
-        const parser = makeMessageParser();
+        invariant(!messenger, 'Already listening');
         const client = createWebSocketClient({
             url,
-            onConnection: handler,
-            onMessage(data, isBinary) {
-                const message = parser(data, isBinary);
+            async onConnection(connection) {
+                try {
+                    messenger.open();
+                    await handler(connection);
+                }
+                finally {
+                    messenger.close();
+                    for (const handle of queries.values()) {
+                        handle.reject(new DOMException('Connection closed'));
+                    }
+                }
+            },
+            onMessage(data) {
+                const message = messenger.parse(data);
                 if (message === undefined)
                     return;
-                handleMessage(message);
+                if ('event' in message) {
+                    for (const observer of observers) {
+                        observer(message.event);
+                    }
+                    return;
+                }
+                const handle = queries.get(message.id);
+                if (!handle) {
+                    console.error(`Unknown response ID: ${message.id}`);
+                    return;
+                }
+                queries.delete(message.id);
+                if ('result' in message) {
+                    handle.resolve(message.result);
+                }
+                else {
+                    handle.reject(typeof message.error === 'string'
+                        ? message.error
+                        : 'request failed');
+                }
             },
             ...options,
         });
-        sender = makeMessageSender(client.send);
-        setInterval(() => {
-            client.send('heartbeat');
-        }, 15_000);
+        messenger = makeClientMessenger(client.send);
         return client.listen();
     }
     return { router, subscribe, listen };
 }
-function getBackoffDelay(attempt, options) {
-    const delay = Math.min(options.startingDelay * Math.pow(options.timeMultiple, attempt), options.maxDelay);
-    return options.jitter ? Math.round(Math.random() * delay) : delay;
-}
-async function connect(url, options) {
-    for (let attempt = 0;;) {
-        const ws = new options.WebSocket(url, options.protocols);
-        if (ws.binaryType === 'blob') {
-            ws.binaryType = 'arraybuffer';
-        }
-        try {
-            await Promise.race([
-                options.aborted,
-                new Promise((resolve, reject) => {
-                    ws.addEventListener('open', () => {
-                        resolve();
-                        ws.removeEventListener('error', reject);
-                    });
-                    ws.addEventListener('error', reject);
-                }),
-            ]);
-            return ws;
-        }
-        catch (error) {
-            attempt++;
-            const shouldRetry = await options.backoff.retry(error, attempt);
-            if (!shouldRetry || attempt >= options.backoff.numOfAttempts) {
-                throw error;
-            }
-            await Promise.race([
-                new Promise((resolve) => {
-                    setTimeout(resolve, getBackoffDelay(attempt, options.backoff));
-                }),
-                options.aborted,
-            ]);
-        }
+async function backoff(error, attempt, options, signal) {
+    signal.throwIfAborted();
+    const shouldRetry = await options.retry(error, attempt);
+    if (!shouldRetry || attempt >= options.numOfAttempts) {
+        throw error;
     }
-}
-function abortSignalToRejectedPromise(signal) {
-    if (!signal)
-        return new Promise(() => undefined);
-    if (signal.aborted) {
-        throw new DOMException('This operation was aborted', 'AbortError');
+    let delay = Math.min(options.startingDelay * Math.pow(options.timeMultiple, attempt - 1), options.maxDelay);
+    if (options.jitter) {
+        delay = Math.round(Math.random() * delay);
     }
-    return new Promise((_, reject) => {
-        signal.addEventListener('abort', () => {
-            reject(new DOMException('This operation was aborted', 'AbortError'));
-        });
+    await new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => {
+            signal.removeEventListener('abort', onAbort);
+            resolve();
+        }, delay);
+        const onAbort = () => {
+            clearTimeout(timeout);
+            reject(signal.reason);
+        };
+        signal.addEventListener('abort', onAbort);
     });
 }
 export function createWebSocketClient(options) {
-    const aborted = abortSignalToRejectedPromise(options.signal);
+    const abortController = new AbortController();
+    if (options.signal) {
+        options.signal.throwIfAborted();
+        options.signal.addEventListener('abort', () => {
+            abortController.abort();
+        });
+    }
     const backOffOptions = {
         jitter: false,
         maxDelay: Infinity,
@@ -133,50 +119,36 @@ export function createWebSocketClient(options) {
     };
     let queue;
     let connection;
-    function send(message) {
+    function send(message, enqueue = false) {
         if (connection) {
             connection.send(message);
         }
-        else {
+        else if (enqueue) {
             queue ??= [];
             queue.push(message);
         }
-    }
-    function onMessageEvent(message) {
-        options.onMessage(message.data, typeof message.data !== 'string');
+        else {
+            throw new Error('no websocket connection');
+        }
     }
     async function listen() {
         try {
             for (;;) {
-                const ws = await connect(options.url, {
-                    WebSocket: options.WebSocket ?? WebSocket,
-                    aborted,
-                    protocols: options.protocols,
-                    backoff: backOffOptions,
-                });
-                ws.addEventListener('message', onMessageEvent);
+                for (let attempt = 0;;) {
+                    try {
+                        connection = await connect(options.url, options.protocols, options.onMessage, abortController.signal);
+                        break;
+                    }
+                    catch (error) {
+                        await backoff(error, ++attempt, backOffOptions, abortController.signal);
+                    }
+                }
                 if (queue?.length) {
                     for (const message of queue) {
-                        ws.send(message);
+                        connection.send(message);
                     }
                     queue = undefined;
                 }
-                connection = {
-                    protocol: ws.protocol,
-                    extensions: ws.extensions,
-                    closed: Promise.race([
-                        aborted,
-                        new Promise((resolve) => {
-                            ws.addEventListener('close', resolve);
-                        }),
-                    ]),
-                    send(data) {
-                        ws.send(data);
-                    },
-                    close(code, reason) {
-                        ws.close(code, reason);
-                    },
-                };
                 await options.onConnection?.(connection);
                 await connection.closed;
                 connection = undefined;

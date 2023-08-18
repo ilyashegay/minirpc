@@ -3,9 +3,7 @@ import WebSocket, { WebSocketServer } from 'ws'
 import {
 	type ClientRoutes,
 	type ServerRoutes,
-	type Request,
-	makeMessageParser,
-	makeMessageSender,
+	makeServerMessenger,
 	stringifySimple,
 	invariant,
 } from './utils.js'
@@ -26,7 +24,7 @@ export type Options<T> = {
 	onRequest?: http.RequestListener
 	onConnection?: (
 		connection: Connection<T>,
-	) => ((event: WebSocket.CloseEvent) => void) | undefined
+	) => ((event: { code: number; reason: string }) => void) | undefined
 }
 
 export function createServer<T>(onError: (error: unknown) => void) {
@@ -56,18 +54,15 @@ export function createServer<T>(onError: (error: unknown) => void) {
 		const heartbeats = new WeakMap<WebSocket, number>()
 		wss = new WebSocketServer({ noServer: true })
 		wss.on('connection', (ws) => {
-			const parser = makeMessageParser()
-			const sender = makeMessageSender((data) => {
+			const abortController = new AbortController()
+			const messenger = makeServerMessenger((data) => {
 				ws.send(data)
-			})
+			}, abortController.signal)
 			heartbeats.set(ws, Date.now())
 			// eslint-disable-next-line @typescript-eslint/no-misused-promises
 			ws.on('message', async (data, isBinary) => {
-				invariant(Buffer.isBuffer(data), 'Wrong Buffer Type')
-				const request = parser(data, isBinary) as
-					| Request
-					| 'heartbeat'
-					| undefined
+				invariant(Buffer.isBuffer(data))
+				const request = messenger.parse(isBinary ? data : data.toString())
 				if (request === 'heartbeat') {
 					heartbeats.set(ws, Date.now())
 					return
@@ -77,28 +72,31 @@ export function createServer<T>(onError: (error: unknown) => void) {
 					const { id, method, params } = request
 					if (method in methods) {
 						const result: unknown = await methods[method](...params)
-						sender({ id, result: result ?? null })
+						messenger.send({ id, result: result ?? null })
 					} else {
-						sender({ id, error: `Unknown method: ${method}` })
+						messenger.send({ id, error: `Unknown method: ${method}` })
 					}
 				} catch (error) {
 					if (error instanceof RPCClientError) {
-						sender({ id: request.id, error: error.message })
+						messenger.send({ id: request.id, error: error.message })
 					} else {
-						sender({ id: request.id, error: true })
+						messenger.send({ id: request.id, error: true })
 						onError(error)
 					}
 				}
 			})
 			const unsubscribe = options.onConnection?.({
 				send: (event) => {
-					sender({ event })
+					messenger.send({ event })
 				},
 				close: ws.close.bind(ws),
 				terminate: ws.terminate.bind(ws),
 			})
 			if (unsubscribe) {
-				ws.once('close', unsubscribe)
+				ws.once('close', (code, reason) => {
+					abortController.abort()
+					unsubscribe({ code, reason: reason.toString() })
+				})
 			}
 		})
 		const interval = setInterval(() => {

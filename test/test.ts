@@ -51,10 +51,10 @@ console.log('listening')
 
 import { createClient } from '../lib/client'
 
-const client = createClient<Alert, Router>()
+const client = createClient<Router>()
 const api = client.router
 
-client.subscribe((event) => {
+client.subscribe<Alert>((event) => {
 	console.log(event) // { type: 'greeting', name: string }
 })
 
@@ -66,7 +66,6 @@ void client.listen(
 		console.log('connection closed')
 	},
 	{
-		WebSocket: window.WebSocket,
 		protocols: [],
 		signal: new AbortController().signal,
 		backoff: {

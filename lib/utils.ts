@@ -1,32 +1,29 @@
 import * as devalue from 'devalue'
 
-export type Request<T extends unknown[] = unknown[]> = {
+type ClientMessage = {
 	id: number
 	method: string
-	params: T
+	params: unknown[]
 }
 
-type ResultResponse<T = unknown> = {
-	id: number
-	result: T
-}
+type ServerMessage =
+	| { id: number; result: unknown }
+	| { id: number; error: unknown }
+	| { event: unknown }
 
-type ErrorResponse = {
-	id: number
-	error: unknown
-}
-
-type EventMessage<T> = {
-	event: T
-}
+type AnyMessage = ClientMessage | ServerMessage
 
 type StreamMessage =
-	| { id: number; stream: 'start' }
-	| { id: number; stream: 'done'; length: number }
+	| { id: number; stream: 'cancel' }
+	| {
+			id: number
+			stream: 'chunk'
+			index: number
+			length: number
+			binary: boolean
+	  }
+	| { id: number; stream: 'done'; count: number; length: number }
 	| { id: number; stream: 'error'; error: string }
-
-export type Response = ResultResponse | ErrorResponse
-export type ServerMessage<T = unknown> = Response | EventMessage<T>
 
 export type SocketData = string | ArrayBuffer | ArrayBufferView
 
@@ -46,152 +43,261 @@ export function invariant(
 	if (!condition) throw new Error(message)
 }
 
-export function makeMessageParser() {
-	const streams = new Map<
+export function stringifySimple(value: unknown) {
+	return devalue.stringify(value, {
+		URL: (val) => val instanceof URL && val.href,
+	})
+}
+
+export function makeServerMessenger(
+	send: (data: SocketData, enqueue?: boolean) => void,
+	signal: AbortSignal,
+) {
+	const messenger = makeMessenger(send, signal)
+	return {
+		parse: messenger.parse as (
+			data: SocketData,
+		) => ClientMessage | 'heartbeat' | undefined,
+		send: messenger.send as (message: ServerMessage) => void,
+	}
+}
+
+export function makeClientMessenger(
+	send: (data: SocketData, enqueue?: boolean) => void,
+) {
+	let controller: AbortController
+	let messenger: ReturnType<typeof makeMessenger> | undefined
+	let queue: ClientMessage[] | undefined
+	setInterval(() => {
+		send('heartbeat')
+	}, 15e3)
+	return {
+		parse(data: SocketData) {
+			invariant(messenger)
+			return messenger.parse(data) as ServerMessage | undefined
+		},
+		send(message: ClientMessage) {
+			if (messenger) {
+				messenger.send(message)
+			} else {
+				queue ??= []
+				queue.push(message)
+			}
+		},
+		open() {
+			controller = new AbortController()
+			messenger = makeMessenger(send, controller.signal)
+			queue?.forEach(messenger.send)
+			queue = undefined
+		},
+		close() {
+			controller.abort()
+			messenger = undefined
+		},
+	}
+}
+
+function makeMessenger(
+	send: (data: SocketData, enqueue?: boolean) => void,
+	signal: AbortSignal,
+) {
+	const inboundStreams = new Map<
 		number,
 		{
-			controller: ReadableStreamDefaultController<ArrayBufferView>
+			controller: ReadableStreamDefaultController<SocketData>
 			canceled: boolean
 			read: number
+			count: number
 		}
 	>()
-	let activeId: number | undefined
-	return function parse(
-		data: SocketData,
-		isBinary: boolean,
-	): Request | ServerMessage | 'heartbeat' | undefined {
-		if (isBinary) {
-			invariant(activeId !== undefined, 'Unexpected binary message')
-			const stream = streams.get(activeId)
-			invariant(stream, `Unknown stream id ${activeId}`)
+	const outboundStreams = new Map<number, AbortController>()
+
+	let expectedChunk: { id: number; length: number; binary: boolean } | undefined
+
+	let nextStreamId = 1
+	const reducers = {
+		URL: (val: unknown) => val instanceof URL && val.href,
+		ReadableStream: (val: unknown) => {
+			if (!(val instanceof ReadableStream)) return
+			const id = nextStreamId++
+			setImmediate(() => void sendStream(id, val as ReadableStream<SocketData>))
+			return id
+		},
+	}
+	const revivers = {
+		URL: (href: string) => new URL(href),
+		ReadableStream: (id: number) => {
+			new ReadableStream<ArrayBufferView>({
+				start(controller) {
+					inboundStreams.set(id, {
+						controller,
+						read: 0,
+						count: 0,
+						canceled: false,
+					})
+				},
+				cancel() {
+					const stream = inboundStreams.get(id)
+					invariant(stream)
+					stream.canceled = true
+					send(JSON.stringify({ id, stream: 'cancel' }))
+				},
+			})
+		},
+	}
+
+	signal.addEventListener('abort', () => {
+		for (const stream of inboundStreams.values()) {
+			stream.controller.error(signal.reason)
+			stream.canceled = true
+		}
+		for (const stream of outboundStreams.values()) {
+			stream.abort()
+		}
+	})
+
+	function parse(data: SocketData): AnyMessage | 'heartbeat' | undefined {
+		if (expectedChunk) {
+			const stream = inboundStreams.get(expectedChunk.id)
+			invariant(stream, `Unknown stream id ${expectedChunk.id}`)
 			if (stream.canceled) return
-			if (data instanceof ArrayBuffer) {
-				data = new Uint8Array(data)
+			if (expectedChunk.binary) {
+				invariant(
+					typeof data !== 'string',
+					'Expected binary chunk. Received string',
+				)
+				invariant(
+					data.byteLength === expectedChunk.length,
+					`Stream Length: Expected ${expectedChunk.length} bytes. Received ${data.byteLength}`,
+				)
+			} else {
+				invariant(
+					typeof data === 'string',
+					'Expected string chunk. Received binary',
+				)
+				invariant(
+					data.length === expectedChunk.length,
+					`Stream Length: Expected ${expectedChunk.length} bytes. Received ${data.length}`,
+				)
 			}
-			invariant(typeof data !== 'string', 'Binary chunk is of type string')
-			invariant(ArrayBuffer.isView(data), 'Unknown chunk type')
 			stream.controller.enqueue(data)
-			stream.read += data.byteLength
+			stream.read += expectedChunk.length
+			expectedChunk = undefined
 			return
 		}
-		const str = String(data)
-		if (str === 'heartbeat') {
-			return str
+		invariant(typeof data === 'string', 'Unexpected binary message')
+		if (data === 'heartbeat') {
+			return data
 		}
-		const json = JSON.parse(str) as StreamMessage | unknown[]
+		const json = JSON.parse(data) as StreamMessage | unknown[]
 		if ('stream' in json) {
-			if (json.stream === 'start') {
-				invariant(activeId === undefined, 'Stream not closed')
-				activeId = json.id
+			if (json.stream === 'cancel') {
+				const stream = outboundStreams.get(json.id)
+				invariant(stream, `Unknown stream id ${json.id}`)
+				stream.abort()
+			}
+			if (json.stream === 'chunk') {
+				const stream = inboundStreams.get(json.id)
+				invariant(stream, `Unknown stream id ${json.id}`)
+				invariant(
+					stream.count === json.index,
+					`Expected chunk index ${stream.count}. Got ${json.index}`,
+				)
+				expectedChunk = {
+					id: json.id,
+					length: json.length,
+					binary: json.binary,
+				}
 			}
 			if (json.stream === 'done') {
-				invariant(activeId === json.id, 'Wrong Stream closed')
-				const stream = streams.get(json.id)
-				invariant(stream, 'Unexpected stream end')
+				const stream = inboundStreams.get(json.id)
+				invariant(stream, `Unknown stream id ${json.id}`)
+				inboundStreams.delete(json.id)
 				if (stream.canceled) return
 				invariant(
 					stream.read === json.length,
 					`Stream Length: Expected ${json.length} bytes. Received ${stream.read}`,
 				)
 				stream.controller.close()
-				activeId = undefined
+				inboundStreams.delete(json.id)
 			}
 			if (json.stream === 'error') {
-				invariant(activeId === json.id, 'Wrong Stream closed')
-				const stream = streams.get(json.id)
-				invariant(stream, 'Unexpected stream end')
+				const stream = inboundStreams.get(json.id)
+				invariant(stream, `Unknown stream id ${json.id}`)
+				inboundStreams.delete(json.id)
 				if (stream.canceled) return
 				stream.controller.error(json.error)
-				activeId = undefined
 			}
-		}
-		const revivers = {
-			URL: (href: string) => new URL(href),
-			ReadableStream: (id: number) => {
-				new ReadableStream<ArrayBufferView>({
-					start(controller) {
-						streams.set(id, { controller, read: 0, canceled: false })
-					},
-					cancel() {
-						const stream = streams.get(id)
-						invariant(stream)
-						stream.canceled = true
-					},
-				})
-			},
+			return
 		}
 		if (Array.isArray(json)) {
-			return devalue.unflatten(json, revivers) as Request | ServerMessage
+			return devalue.unflatten(json, revivers) as AnyMessage
 		}
 	}
-}
 
-export function makeMessageSender(send: (data: SocketData) => void) {
-	let nextId = 1
-	let streamActive = false
-	const queue: { id: number; stream: ReadableStream<SocketData> }[] = []
-
-	async function sendStream() {
-		if (!queue.length) return
-		streamActive = true
-		const { id, stream } = queue[0]
+	async function sendStream(id: number, stream: ReadableStream<SocketData>) {
+		const controller = new AbortController()
+		outboundStreams.set(id, controller)
+		controller.signal.addEventListener('abort', () => {
+			void reader.cancel(signal.reason)
+		})
 		const reader = stream.getReader()
 		let read = 0
+		let count = 0
 		try {
-			send(JSON.stringify({ stream: 'start', id }))
 			for (;;) {
 				const { done, value } = await reader.read()
 				if (done) break
-				if (value instanceof ArrayBuffer) {
-					read += value.byteLength
-					send(value)
-				} else if (ArrayBuffer.isView(value)) {
-					read += value.byteLength
-					send(value)
+				let length = 0
+				let binary = true
+				if (value instanceof ArrayBuffer || ArrayBuffer.isView(value)) {
+					length = value.byteLength
 				} else if (typeof value === 'string') {
-					read += value.length
-					send(new TextEncoder().encode(value))
+					length = value.length
+					binary = false
 				} else {
 					throw new Error('Unexpected value')
 				}
+				read += length
+				send(
+					JSON.stringify({
+						stream: 'chunk',
+						id,
+						length,
+						binary,
+						index: count++,
+					} satisfies StreamMessage),
+				)
+				send(value)
 			}
-			send(JSON.stringify({ stream: 'done', id, length: read }))
+			send(
+				JSON.stringify({
+					stream: 'done',
+					id,
+					length: read,
+					count,
+				} satisfies StreamMessage),
+			)
 		} catch (error) {
+			if (signal.aborted) return
 			console.error(error)
-			send(JSON.stringify({ stream: 'error', id, error: String(error) }))
+			send(
+				JSON.stringify({
+					stream: 'error',
+					id,
+					error: String(error),
+				} satisfies StreamMessage),
+			)
 		} finally {
 			reader.releaseLock()
-			queue.shift()
-			streamActive = false
-			if (queue.length) void sendStream()
+			outboundStreams.delete(id)
 		}
 	}
 
-	return (message: Request | ServerMessage) => {
-		send(
-			devalue.stringify(message, {
-				URL: (val) => val instanceof URL && val.href,
-				ReadableStream: (val) => {
-					if (!(val instanceof ReadableStream)) return
-					const id = nextId++
-					queue.push({
-						id,
-						stream: val as ReadableStream<SocketData>,
-					})
-					return id
-				},
-			}),
-		)
-		if (!streamActive && queue.length) {
-			sendStream().catch((error) => {
-				console.error(error)
-			})
-		}
+	return {
+		parse,
+		send: (message: AnyMessage) => {
+			send(devalue.stringify(message, reducers))
+		},
 	}
-}
-
-export function stringifySimple(value: unknown) {
-	return devalue.stringify(value, {
-		URL: (val) => val instanceof URL && val.href,
-	})
 }
