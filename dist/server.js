@@ -1,9 +1,10 @@
 import http from 'node:http';
 import WebSocket, { WebSocketServer } from 'ws';
 import { makeServerMessenger, stringifySimple, invariant, } from './utils.js';
+export {};
 export class RPCClientError extends Error {
 }
-export function createServer(onError) {
+export function createServer(onError, transforms) {
     const methods = {};
     let wss;
     function router(routes) {
@@ -32,7 +33,7 @@ export function createServer(onError) {
             const abortController = new AbortController();
             const messenger = makeServerMessenger((data) => {
                 ws.send(data);
-            }, abortController.signal);
+            }, abortController.signal, transforms);
             heartbeats.set(ws, Date.now());
             // eslint-disable-next-line @typescript-eslint/no-misused-promises
             ws.on('message', async (data, isBinary) => {

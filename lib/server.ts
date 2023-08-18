@@ -3,10 +3,13 @@ import WebSocket, { WebSocketServer } from 'ws'
 import {
 	type ClientRoutes,
 	type ServerRoutes,
+	type DevalueTransforms,
 	makeServerMessenger,
 	stringifySimple,
 	invariant,
 } from './utils.js'
+
+export { type DevalueTransforms }
 
 export class RPCClientError extends Error {}
 
@@ -27,7 +30,10 @@ export type Options<T> = {
 	) => ((event: { code: number; reason: string }) => void) | undefined
 }
 
-export function createServer<T>(onError: (error: unknown) => void) {
+export function createServer<T>(
+	onError: (error: unknown) => void,
+	transforms?: DevalueTransforms,
+) {
 	const methods: ServerRoutes = {}
 	let wss: WebSocketServer
 
@@ -55,9 +61,13 @@ export function createServer<T>(onError: (error: unknown) => void) {
 		wss = new WebSocketServer({ noServer: true })
 		wss.on('connection', (ws) => {
 			const abortController = new AbortController()
-			const messenger = makeServerMessenger((data) => {
-				ws.send(data)
-			}, abortController.signal)
+			const messenger = makeServerMessenger(
+				(data) => {
+					ws.send(data)
+				},
+				abortController.signal,
+				transforms,
+			)
 			heartbeats.set(ws, Date.now())
 			// eslint-disable-next-line @typescript-eslint/no-misused-promises
 			ws.on('message', async (data, isBinary) => {

@@ -1,3 +1,7 @@
+export type DevalueTransforms = Record<string, [
+    (value: unknown) => unknown,
+    (value: any) => unknown
+]>;
 type ClientMessage = {
     id: number;
     method: string;
@@ -19,11 +23,11 @@ export type ClientRoutes<R extends ServerRoutes = ServerRoutes> = {
 };
 export declare function invariant(condition: unknown, message?: string): asserts condition;
 export declare function stringifySimple(value: unknown): string;
-export declare function makeServerMessenger(send: (data: SocketData, enqueue?: boolean) => void, signal: AbortSignal): {
+export declare function makeServerMessenger(send: (data: SocketData, enqueue?: boolean) => void, signal: AbortSignal, transforms?: DevalueTransforms): {
     parse: (data: SocketData) => ClientMessage | 'heartbeat' | undefined;
     send: (message: ServerMessage) => void;
 };
-export declare function makeClientMessenger(send: (data: SocketData, enqueue?: boolean) => void): {
+export declare function makeClientMessenger(send: (data: SocketData, enqueue?: boolean) => void, transforms?: DevalueTransforms): {
     parse(data: SocketData): ServerMessage | undefined;
     send(message: ClientMessage): void;
     open(): void;

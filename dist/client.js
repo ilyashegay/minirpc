@@ -1,7 +1,6 @@
-import { connect } from 'connect';
+import { connect } from '@minirpc/connect';
 import { makeClientMessenger, invariant, } from './utils.js';
-export {};
-export function createClient() {
+export function createClient({ transforms, }) {
     let nextRequestId = 1;
     let messenger;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -73,7 +72,7 @@ export function createClient() {
             },
             ...options,
         });
-        messenger = makeClientMessenger(client.send);
+        messenger = makeClientMessenger(client.send, transforms);
         return client.listen();
     }
     return { router, subscribe, listen };

@@ -1,4 +1,15 @@
 import * as devalue from 'devalue'
+import {
+	type StreamMessage,
+	type StreamChunkMeta,
+	makeStreamTransport,
+} from './streams.js'
+
+export type DevalueTransforms = Record<
+	string,
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	[(value: unknown) => unknown, (value: any) => unknown]
+>
 
 type ClientMessage = {
 	id: number
@@ -12,18 +23,6 @@ type ServerMessage =
 	| { event: unknown }
 
 type AnyMessage = ClientMessage | ServerMessage
-
-type StreamMessage =
-	| { id: number; stream: 'cancel' }
-	| {
-			id: number
-			stream: 'chunk'
-			index: number
-			length: number
-			binary: boolean
-	  }
-	| { id: number; stream: 'done'; count: number; length: number }
-	| { id: number; stream: 'error'; error: string }
 
 export type SocketData = string | ArrayBuffer | ArrayBufferView
 
@@ -52,8 +51,9 @@ export function stringifySimple(value: unknown) {
 export function makeServerMessenger(
 	send: (data: SocketData, enqueue?: boolean) => void,
 	signal: AbortSignal,
+	transforms?: DevalueTransforms,
 ) {
-	const messenger = makeMessenger(send, signal)
+	const messenger = makeMessenger(send, signal, transforms)
 	return {
 		parse: messenger.parse as (
 			data: SocketData,
@@ -64,6 +64,7 @@ export function makeServerMessenger(
 
 export function makeClientMessenger(
 	send: (data: SocketData, enqueue?: boolean) => void,
+	transforms?: DevalueTransforms,
 ) {
 	let controller: AbortController
 	let messenger: ReturnType<typeof makeMessenger> | undefined
@@ -86,7 +87,7 @@ export function makeClientMessenger(
 		},
 		open() {
 			controller = new AbortController()
-			messenger = makeMessenger(send, controller.signal)
+			messenger = makeMessenger(send, controller.signal, transforms)
 			queue?.forEach(messenger.send)
 			queue = undefined
 		},
@@ -100,202 +101,49 @@ export function makeClientMessenger(
 function makeMessenger(
 	send: (data: SocketData, enqueue?: boolean) => void,
 	signal: AbortSignal,
+	transforms?: DevalueTransforms,
 ) {
-	const inboundStreams = new Map<
-		number,
-		{
-			controller: ReadableStreamDefaultController<SocketData>
-			canceled: boolean
-			read: number
-			count: number
-		}
-	>()
-	const outboundStreams = new Map<number, AbortController>()
-
-	let expectedChunk: { id: number; length: number; binary: boolean } | undefined
-
-	let nextStreamId = 1
-	const reducers = {
-		URL: (val: unknown) => val instanceof URL && val.href,
-		ReadableStream: (val: unknown) => {
-			if (!(val instanceof ReadableStream)) return
-			const id = nextStreamId++
-			setImmediate(() => void sendStream(id, val as ReadableStream<SocketData>))
-			return id
-		},
-	}
-	const revivers = {
-		URL: (href: string) => new URL(href),
-		ReadableStream: (id: number) => {
-			new ReadableStream<ArrayBufferView>({
-				start(controller) {
-					inboundStreams.set(id, {
-						controller,
-						read: 0,
-						count: 0,
-						canceled: false,
-					})
-				},
-				cancel() {
-					const stream = inboundStreams.get(id)
-					invariant(stream)
-					stream.canceled = true
-					send(JSON.stringify({ id, stream: 'cancel' }))
-				},
-			})
-		},
-	}
-
-	signal.addEventListener('abort', () => {
-		for (const stream of inboundStreams.values()) {
-			stream.controller.error(signal.reason)
-			stream.canceled = true
-		}
-		for (const stream of outboundStreams.values()) {
-			stream.abort()
-		}
+	let expectedChunk: StreamChunkMeta | undefined
+	const streams = makeStreamTransport((message, chunk) => {
+		send(JSON.stringify(message))
+		if (chunk) send(chunk)
 	})
 
-	function parse(data: SocketData): AnyMessage | 'heartbeat' | undefined {
-		if (expectedChunk) {
-			const stream = inboundStreams.get(expectedChunk.id)
-			invariant(stream, `Unknown stream id ${expectedChunk.id}`)
-			if (stream.canceled) return
-			if (expectedChunk.binary) {
-				invariant(
-					typeof data !== 'string',
-					'Expected binary chunk. Received string',
-				)
-				invariant(
-					data.byteLength === expectedChunk.length,
-					`Stream Length: Expected ${expectedChunk.length} bytes. Received ${data.byteLength}`,
-				)
-			} else {
-				invariant(
-					typeof data === 'string',
-					'Expected string chunk. Received binary',
-				)
-				invariant(
-					data.length === expectedChunk.length,
-					`Stream Length: Expected ${expectedChunk.length} bytes. Received ${data.length}`,
-				)
-			}
-			stream.controller.enqueue(data)
-			stream.read += expectedChunk.length
-			expectedChunk = undefined
-			return
-		}
-		invariant(typeof data === 'string', 'Unexpected binary message')
-		if (data === 'heartbeat') {
-			return data
-		}
-		const json = JSON.parse(data) as StreamMessage | unknown[]
-		if ('stream' in json) {
-			if (json.stream === 'cancel') {
-				const stream = outboundStreams.get(json.id)
-				invariant(stream, `Unknown stream id ${json.id}`)
-				stream.abort()
-			}
-			if (json.stream === 'chunk') {
-				const stream = inboundStreams.get(json.id)
-				invariant(stream, `Unknown stream id ${json.id}`)
-				invariant(
-					stream.count === json.index,
-					`Expected chunk index ${stream.count}. Got ${json.index}`,
-				)
-				expectedChunk = {
-					id: json.id,
-					length: json.length,
-					binary: json.binary,
-				}
-			}
-			if (json.stream === 'done') {
-				const stream = inboundStreams.get(json.id)
-				invariant(stream, `Unknown stream id ${json.id}`)
-				inboundStreams.delete(json.id)
-				if (stream.canceled) return
-				invariant(
-					stream.read === json.length,
-					`Stream Length: Expected ${json.length} bytes. Received ${stream.read}`,
-				)
-				stream.controller.close()
-				inboundStreams.delete(json.id)
-			}
-			if (json.stream === 'error') {
-				const stream = inboundStreams.get(json.id)
-				invariant(stream, `Unknown stream id ${json.id}`)
-				inboundStreams.delete(json.id)
-				if (stream.canceled) return
-				stream.controller.error(json.error)
-			}
-			return
-		}
-		if (Array.isArray(json)) {
-			return devalue.unflatten(json, revivers) as AnyMessage
-		}
-	}
+	signal.addEventListener('abort', () => {
+		streams.abort(signal.reason)
+	})
 
-	async function sendStream(id: number, stream: ReadableStream<SocketData>) {
-		const controller = new AbortController()
-		outboundStreams.set(id, controller)
-		controller.signal.addEventListener('abort', () => {
-			void reader.cancel(signal.reason)
-		})
-		const reader = stream.getReader()
-		let read = 0
-		let count = 0
-		try {
-			for (;;) {
-				const { done, value } = await reader.read()
-				if (done) break
-				let length = 0
-				let binary = true
-				if (value instanceof ArrayBuffer || ArrayBuffer.isView(value)) {
-					length = value.byteLength
-				} else if (typeof value === 'string') {
-					length = value.length
-					binary = false
-				} else {
-					throw new Error('Unexpected value')
-				}
-				read += length
-				send(
-					JSON.stringify({
-						stream: 'chunk',
-						id,
-						length,
-						binary,
-						index: count++,
-					} satisfies StreamMessage),
-				)
-				send(value)
-			}
-			send(
-				JSON.stringify({
-					stream: 'done',
-					id,
-					length: read,
-					count,
-				} satisfies StreamMessage),
-			)
-		} catch (error) {
-			if (signal.aborted) return
-			console.error(error)
-			send(
-				JSON.stringify({
-					stream: 'error',
-					id,
-					error: String(error),
-				} satisfies StreamMessage),
-			)
-		} finally {
-			reader.releaseLock()
-			outboundStreams.delete(id)
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	const reducers: Record<string, (value: any) => any> = {}
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	const revivers: Record<string, (value: any) => any> = {}
+	if (transforms) {
+		for (const key of Object.keys(transforms)) {
+			reducers[key] = transforms[key][0]
+			revivers[key] = transforms[key][1]
 		}
 	}
+	reducers.ReadableStream = streams.reduce
+	revivers.ReadableStream = streams.revive
 
 	return {
-		parse,
+		parse: (data: SocketData): AnyMessage | 'heartbeat' | undefined => {
+			if (expectedChunk) {
+				streams.receiveChunk(data, expectedChunk)
+				expectedChunk = undefined
+				return
+			}
+			invariant(typeof data === 'string', 'Unexpected binary message')
+			if (data === 'heartbeat') {
+				return data
+			}
+			const message = JSON.parse(data) as StreamMessage | unknown[]
+			if (Array.isArray(message)) {
+				return devalue.unflatten(message, revivers) as AnyMessage
+			}
+			invariant('stream' in message, 'Unknown message')
+			expectedChunk = streams.receiveMessage(message)
+		},
 		send: (message: AnyMessage) => {
 			send(devalue.stringify(message, reducers))
 		},

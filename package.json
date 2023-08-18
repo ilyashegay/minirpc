@@ -28,6 +28,7 @@
 		"eslint": "eslint lib"
 	},
 	"dependencies": {
+		"@minirpc/connect": "file:./connect",
 		"devalue": "^4.3.2",
 		"ws": "^8.13.0"
 	},

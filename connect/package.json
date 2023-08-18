@@ -1,5 +1,5 @@
 {
-	"name": "connect",
+	"name": "@minirpc/connect",
 	"version": "0.0.1",
 	"type": "module",
 	"browser": "browser.js",

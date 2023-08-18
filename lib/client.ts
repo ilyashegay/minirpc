@@ -1,12 +1,13 @@
-import { connect, type Connection } from 'connect'
+import { connect, type Connection } from '@minirpc/connect'
 import {
 	type ClientRoutes,
 	type SocketData,
+	type DevalueTransforms,
 	makeClientMessenger,
 	invariant,
 } from './utils.js'
 
-export { type Connection }
+export type { Connection, DevalueTransforms }
 
 export type Options = {
 	protocols?: string[]
@@ -34,7 +35,11 @@ type PromiseHandle<T> = {
 	reject: Parameters<ConstructorParameters<typeof Promise<T>>[0]>[1]
 }
 
-export function createClient<Router extends ClientRoutes>() {
+export function createClient<Router extends ClientRoutes>({
+	transforms,
+}: {
+	transforms?: DevalueTransforms
+}) {
 	let nextRequestId = 1
 	let messenger: ReturnType<typeof makeClientMessenger>
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -113,7 +118,7 @@ export function createClient<Router extends ClientRoutes>() {
 			},
 			...options,
 		})
-		messenger = makeClientMessenger(client.send)
+		messenger = makeClientMessenger(client.send, transforms)
 		return client.listen()
 	}
 

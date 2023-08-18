@@ -1,7 +1,8 @@
 /// <reference types="node" />
 /// <reference types="node" />
 import http from 'node:http';
-import { type ClientRoutes, type ServerRoutes } from './utils.js';
+import { type ClientRoutes, type ServerRoutes, type DevalueTransforms } from './utils.js';
+export { type DevalueTransforms };
 export declare class RPCClientError extends Error {
 }
 export type Connection<T> = {
@@ -20,7 +21,7 @@ export type Options<T> = {
         reason: string;
     }) => void) | undefined;
 };
-export declare function createServer<T>(onError: (error: unknown) => void): {
+export declare function createServer<T>(onError: (error: unknown) => void, transforms?: DevalueTransforms): {
     router: <Routes extends ServerRoutes>(routes: Routes) => ClientRoutes<Routes>;
     broadcast: (event: T) => void;
     listen: (options?: Options<T>) => Promise<void>;

@@ -1,6 +1,6 @@
-import { type Connection } from 'connect';
-import { type ClientRoutes, type SocketData } from './utils.js';
-export { type Connection };
+import { type Connection } from '@minirpc/connect';
+import { type ClientRoutes, type SocketData, type DevalueTransforms } from './utils.js';
+export type { Connection, DevalueTransforms };
 export type Options = {
     protocols?: string[];
     signal?: AbortSignal;
@@ -19,7 +19,9 @@ type BackoffOptions = {
     startingDelay: number;
     timeMultiple: number;
 };
-export declare function createClient<Router extends ClientRoutes>(): {
+export declare function createClient<Router extends ClientRoutes>({ transforms, }: {
+    transforms?: DevalueTransforms;
+}): {
     router: Router;
     subscribe: <T>(observer: (value: T) => void, signal?: AbortSignal) => void;
     listen: (url: string, handler: (connection: Connection) => void | PromiseLike<void>, options?: Options) => Promise<void>;
