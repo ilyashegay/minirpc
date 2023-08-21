@@ -97,22 +97,34 @@ export function createServer(onError, transforms) {
                 });
                 res.end(body);
             }));
-        server.on('upgrade', (request, socket, head) => {
+        const checkUpgrade = async (request, socket, head) => {
+            if (!options.onUpgrade)
+                return 101;
             socket.on('error', onError);
             try {
-                if (options.authenticate && !options.authenticate(request)) {
-                    socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
-                    socket.destroy();
-                    return;
-                }
+                return await options.onUpgrade(request, socket, head);
             }
             catch (error) {
                 onError(error);
-                socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
-                socket.destroy();
-                return;
+                return 403;
             }
-            wss.handleUpgrade(request, socket, head, (ws) => wss.emit('connection', ws, request));
+        };
+        const handleUpgrade = async (request, socket, head) => {
+            let code = await checkUpgrade(request, socket, head);
+            if (!code || socket.destroyed)
+                return;
+            if (code === 101) {
+                wss.handleUpgrade(request, socket, head, (ws) => wss.emit('connection', ws, request));
+            }
+            else {
+                if (code < 400 || !(code in http.STATUS_CODES))
+                    code = 500;
+                socket.write(`HTTP/1.1 ${code} ${http.STATUS_CODES[code]}\r\n\r\n`);
+                socket.destroy();
+            }
+        };
+        server.on('upgrade', (request, socket, head) => {
+            void handleUpgrade(request, socket, head);
         });
         server.on('error', onError);
         options.signal?.addEventListener('abort', () => {

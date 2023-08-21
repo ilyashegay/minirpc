@@ -1,6 +1,8 @@
 /// <reference types="node" />
 /// <reference types="node" />
+/// <reference types="node" />
 import http from 'node:http';
+import type { Duplex } from 'node:stream';
 import { type ClientRoutes, type ServerRoutes, type DevalueTransforms } from './utils.js';
 export { type DevalueTransforms };
 export declare class RPCClientError extends Error {
@@ -14,8 +16,8 @@ export type Options<T> = {
     port?: number;
     signal?: AbortSignal;
     heartbeat?: number;
-    authenticate?: (request: http.IncomingMessage) => boolean;
     onRequest?: http.RequestListener;
+    onUpgrade?: (request: http.IncomingMessage, socket: Duplex, head: Buffer) => number | undefined | Promise<number | undefined>;
     onConnection?: (connection: Connection<T>) => ((event: {
         code: number;
         reason: string;

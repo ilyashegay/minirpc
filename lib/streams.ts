@@ -3,10 +3,10 @@ import { type SocketData, invariant } from './utils.js'
 export type StreamChunkMeta = { id: number; length: number; binary: boolean }
 
 export type StreamMessage =
-	| { id: number; stream: 'cancel' }
-	| (StreamChunkMeta & { stream: 'chunk'; index: number })
-	| { id: number; stream: 'done'; count: number; length: number }
-	| { id: number; stream: 'error'; error: string }
+	| { stream: 'cancel'; id: number }
+	| ({ stream: 'chunk'; index: number } & StreamChunkMeta)
+	| { stream: 'done'; id: number; count: number; length: number }
+	| { stream: 'error'; id: number; error: string }
 
 export function makeStreamTransport(
 	send: (message: StreamMessage, chunk?: SocketData) => void,

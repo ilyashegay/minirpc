@@ -5,19 +5,19 @@ export type StreamChunkMeta = {
     binary: boolean;
 };
 export type StreamMessage = {
-    id: number;
     stream: 'cancel';
-} | (StreamChunkMeta & {
+    id: number;
+} | ({
     stream: 'chunk';
     index: number;
-}) | {
-    id: number;
+} & StreamChunkMeta) | {
     stream: 'done';
+    id: number;
     count: number;
     length: number;
 } | {
-    id: number;
     stream: 'error';
+    id: number;
     error: string;
 };
 export declare function makeStreamTransport(send: (message: StreamMessage, chunk?: SocketData) => void): {

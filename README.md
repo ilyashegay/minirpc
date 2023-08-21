@@ -52,10 +52,10 @@ Client:
 import { createClient } from 'minirpc/client'
 import type { Alert, Router } from './server'
 
-const rpc = createClient<Alert, Router>()
+const rpc = createClient<Router>()
 export default rpc.router
 
-rpc.subscribe((event) => {
+rpc.subscribe<Alert>((event) => {
 	console.log(event) // { type: 'greeting', name: string }
 })
 
@@ -67,7 +67,6 @@ await rpc.listen(
 		console.log('connection closed')
 	},
 	{
-		WebSocket: window.WebSocket,
 		protocols: [],
 		signal: new AbortController().signal,
 		backoff: {

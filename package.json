@@ -12,9 +12,6 @@
 			"default": "./dist/server.js"
 		}
 	},
-	"workspaces": [
-		"connect"
-	],
 	"license": "MIT",
 	"repository": "https://github.com/ilyashegay/minirpc",
 	"files": [
