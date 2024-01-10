@@ -9,7 +9,9 @@ export type Alert = {
 	name: string
 }
 
-const server = createServer<Alert>((error) => {
+const abortController = new AbortController()
+
+const server = createServer((error) => {
 	console.error(error)
 })
 
@@ -17,31 +19,33 @@ const router = server.router({
 	add(a: number, b: number) {
 		return a + b
 	},
-	greetEveryone(name: string) {
-		server.broadcast({
-			type: 'greeting',
-			name,
+	list(a: number) {
+		return new ReadableStream<number>({
+			start(controller) {
+				controller.enqueue(a)
+				controller.enqueue(a + 1)
+				controller.enqueue(a + 2)
+				controller.enqueue(a + 3)
+				controller.close()
+			},
 		})
 	},
 })
 
 await server.listen({
 	port: 3000,
-	signal: new AbortController().signal,
-	authenticate(request) {
-		const url = new URL(request.url!)
-		return url.searchParams.get('key') === 'password'
-	},
+	signal: abortController.signal,
 	onRequest(request, response) {
 		response.end('Hello World')
 	},
+	// eslint-disable-next-line @typescript-eslint/no-unused-vars
+	onUpgrade(request, socket, head) {
+		console.log('upgrading')
+		return 101
+	},
+	// eslint-disable-next-line @typescript-eslint/no-unused-vars
 	onConnection(connection) {
-		connection.send({
-			type: 'greeting',
-			name: 'new connection',
-		})
-		// connection.close(1000, 'done')
-		// connection.terminate()
+		console.log('new connection')
 		return () => {
 			console.log('closed')
 		}
@@ -51,12 +55,8 @@ console.log('listening')
 
 import { createClient } from '../lib/client'
 
-const client = createClient<Router>()
+const client = createClient<Router>({})
 const api = client.router
-
-client.subscribe<Alert>((event) => {
-	console.log(event) // { type: 'greeting', name: string }
-})
 
 void client.listen(
 	'ws://localhost:3000',
@@ -67,7 +67,7 @@ void client.listen(
 	},
 	{
 		protocols: [],
-		signal: new AbortController().signal,
+		signal: abortController.signal,
 		backoff: {
 			jitter: false,
 			maxDelay: Infinity,
@@ -82,3 +82,12 @@ void client.listen(
 test('add', async () => {
 	assert.is(await api.add(123, 456), 579)
 })
+test('list', async () => {
+	const list: number[] = []
+	await api.list(10).subscribe((n) => {
+		list.push(n)
+	})
+	assert.equal(list, [10, 11, 12, 13])
+})
+
+test.run()

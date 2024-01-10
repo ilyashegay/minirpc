@@ -20,6 +20,7 @@
 	],
 	"scripts": {
 		"build": "tsc --project tsconfig.build.json",
+		"test": "tsx ./test/test.ts",
 		"lint": "npm run tsc && npm run eslint",
 		"tsc": "tsc --noEmit --project tsconfig.json",
 		"eslint": "eslint lib"
@@ -27,16 +28,17 @@
 	"dependencies": {
 		"@minirpc/connect": "file:./connect",
 		"devalue": "^4.3.2",
-		"ws": "^8.13.0"
+		"ws": "^8.16.0"
 	},
 	"devDependencies": {
-		"@types/node": "20.5.0",
-		"@types/ws": "^8.5.5",
-		"@typescript-eslint/eslint-plugin": "^6.4.0",
-		"@typescript-eslint/parser": "^6.4.0",
-		"eslint": "^8.47.0",
-		"eslint-config-prettier": "^9.0.0",
-		"typescript": "5.1.6",
+		"@types/node": "20.10.8",
+		"@types/ws": "^8.5.10",
+		"@typescript-eslint/eslint-plugin": "^6.18.0",
+		"@typescript-eslint/parser": "^6.18.0",
+		"eslint": "^8.56.0",
+		"eslint-config-prettier": "^9.1.0",
+		"tsx": "^4.7.0",
+		"typescript": "5.3.3",
 		"uvu": "^0.5.6"
 	},
 	"prettier": {
