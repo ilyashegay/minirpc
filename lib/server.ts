@@ -5,8 +5,10 @@ import {
 	type ClientRoutes,
 	type ServerRoutes,
 	type DevalueTransforms,
-	makeServerMessenger,
-	stringifySimple,
+	type SocketData,
+	type ClientMessage,
+	type ServerMessage,
+	makeMessenger,
 	invariant,
 } from './utils.js'
 
@@ -14,13 +16,12 @@ export { type DevalueTransforms }
 
 export class RPCClientError extends Error {}
 
-export type Connection<T> = {
-	send: (event: T) => void
+export type Connection = {
 	close: (code?: number, data?: string | Buffer) => void
 	terminate: () => void
 }
 
-export type Options<T> = {
+export type Options = {
 	port?: number
 	signal?: AbortSignal
 	heartbeat?: number
@@ -31,11 +32,11 @@ export type Options<T> = {
 		head: Buffer,
 	) => number | undefined | Promise<number | undefined>
 	onConnection?: (
-		connection: Connection<T>,
+		connection: Connection,
 	) => ((event: { code: number; reason: string }) => void) | undefined
 }
 
-export function createServer<T>(
+export function createServer(
 	onError: (error: unknown) => void,
 	transforms?: DevalueTransforms,
 ) {
@@ -50,29 +51,22 @@ export function createServer<T>(
 		return {} as ClientRoutes<Routes>
 	}
 
-	function broadcast(event: T) {
-		if (!wss.clients.size) return
-		const message = stringifySimple({ event })
-		for (const ws of wss.clients) {
-			if (ws.readyState === WebSocket.OPEN) {
-				ws.send(message)
-			}
-		}
-	}
-
-	function listen(options: Options<T> = {}) {
+	function listen(options: Options = {}) {
 		invariant(!wss, 'Already Listening')
 		const heartbeats = new WeakMap<WebSocket, number>()
 		wss = new WebSocketServer({ noServer: true })
 		wss.on('connection', (ws) => {
 			const abortController = new AbortController()
-			const messenger = makeServerMessenger(
+			const messenger = makeMessenger(
 				(data) => {
 					ws.send(data)
 				},
 				abortController.signal,
 				transforms,
-			)
+			) as {
+				parse: (data: SocketData) => ClientMessage | 'heartbeat' | undefined
+				send: (message: ServerMessage) => void
+			}
 			heartbeats.set(ws, Date.now())
 			// eslint-disable-next-line @typescript-eslint/no-misused-promises
 			ws.on('message', async (data, isBinary) => {
@@ -101,15 +95,12 @@ export function createServer<T>(
 				}
 			})
 			const unsubscribe = options.onConnection?.({
-				send: (event) => {
-					messenger.send({ event })
-				},
 				close: ws.close.bind(ws),
 				terminate: ws.terminate.bind(ws),
 			})
 			if (unsubscribe) {
 				ws.once('close', (code, reason) => {
-					abortController.abort()
+					abortController.abort(reason.toString())
 					unsubscribe({ code, reason: reason.toString() })
 				})
 			}
@@ -179,5 +170,5 @@ export function createServer<T>(
 		})
 	}
 
-	return { router, broadcast, listen }
+	return { router, listen }
 }
