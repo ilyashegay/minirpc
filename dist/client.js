@@ -1,24 +1,53 @@
 import { connect } from '@minirpc/connect';
-import { makeClientMessenger, invariant, } from './utils.js';
-export function createClient({ transforms, }) {
+import { makeMessenger, invariant, } from './utils.js';
+export function createClient({ transforms, } = {}) {
+    let started = false;
     let nextRequestId = 1;
-    let messenger;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const queries = new Map();
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const observers = new Set();
-    function subscribe(observer, signal) {
-        observers.add(observer);
-        signal?.addEventListener('abort', () => {
-            observers.delete(observer);
-        });
-    }
+    let messenger;
+    let queue;
+    const connectionClosedException = new DOMException('Connection closed', 'WebSocketConnectionClosedError');
     function query(method, params) {
-        return new Promise((resolve, reject) => {
+        const promise = new Promise((resolve, reject) => {
             const id = nextRequestId++;
-            messenger.send({ id, method, params });
+            const message = { id, method, params };
+            if (messenger) {
+                messenger.send(message);
+            }
+            else {
+                queue ??= [];
+                queue.push(message);
+            }
             queries.set(id, { resolve, reject });
         });
+        promise.subscribe = async (observer, signal) => {
+            const stream = await promise;
+            invariant(stream instanceof ReadableStream);
+            const reader = stream.getReader();
+            signal?.addEventListener('abort', () => {
+                if (stream.locked)
+                    void reader.cancel(signal.reason);
+            });
+            try {
+                for (;;) {
+                    const { done, value } = await reader.read();
+                    if (done)
+                        break;
+                    observer(value);
+                }
+            }
+            catch (error) {
+                if (error === connectionClosedException) {
+                    return;
+                }
+                throw error;
+            }
+            finally {
+                reader.releaseLock();
+            }
+        };
+        return promise;
     }
     const router = new Proxy({}, {
         get(_, prop) {
@@ -30,31 +59,31 @@ export function createClient({ transforms, }) {
         },
     });
     async function listen(url, handler, options = {}) {
-        invariant(!messenger, 'Already listening');
+        invariant(!started, 'Already listening');
+        started = true;
         const client = createWebSocketClient({
             url,
             async onConnection(connection) {
+                const controller = new AbortController();
                 try {
-                    messenger.open();
+                    messenger = makeMessenger(client.send, controller.signal, transforms);
+                    queue?.forEach(messenger.send);
+                    queue = undefined;
                     await handler(connection);
                 }
                 finally {
-                    messenger.close();
+                    controller.abort(connectionClosedException);
+                    messenger = undefined;
                     for (const handle of queries.values()) {
-                        handle.reject(new DOMException('Connection closed'));
+                        handle.reject(connectionClosedException);
                     }
                 }
             },
             onMessage(data) {
+                invariant(messenger);
                 const message = messenger.parse(data);
                 if (message === undefined)
                     return;
-                if ('event' in message) {
-                    for (const observer of observers) {
-                        observer(message.event);
-                    }
-                    return;
-                }
                 const handle = queries.get(message.id);
                 if (!handle) {
                     console.error(`Unknown response ID: ${message.id}`);
@@ -72,10 +101,15 @@ export function createClient({ transforms, }) {
             },
             ...options,
         });
-        messenger = makeClientMessenger(client.send, transforms);
+        const interval = setInterval(() => {
+            client.send('heartbeat');
+        }, 15e3);
+        options.signal?.addEventListener('abort', () => {
+            clearInterval(interval);
+        });
         return client.listen();
     }
-    return { router, subscribe, listen };
+    return { router, listen };
 }
 async function backoff(error, attempt, options, signal) {
     signal.throwIfAborted();
@@ -102,9 +136,10 @@ async function backoff(error, attempt, options, signal) {
 export function createWebSocketClient(options) {
     const abortController = new AbortController();
     if (options.signal) {
-        options.signal.throwIfAborted();
-        options.signal.addEventListener('abort', () => {
-            abortController.abort();
+        const signal = options.signal;
+        signal.throwIfAborted();
+        signal.addEventListener('abort', () => {
+            abortController.abort(signal.reason);
         });
     }
     const backOffOptions = {

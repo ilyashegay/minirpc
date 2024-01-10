@@ -19,11 +19,10 @@ type BackoffOptions = {
     startingDelay: number;
     timeMultiple: number;
 };
-export declare function createClient<Router extends ClientRoutes>({ transforms, }: {
+export declare function createClient<Router extends ClientRoutes>({ transforms, }?: {
     transforms?: DevalueTransforms;
 }): {
     router: Router;
-    subscribe: <T>(observer: (value: T) => void, signal?: AbortSignal) => void;
     listen: (url: string, handler: (connection: Connection) => void | PromiseLike<void>, options?: Options) => Promise<void>;
 };
 export declare function createWebSocketClient(options: WebSocketClientOptions): {

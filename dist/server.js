@@ -1,6 +1,6 @@
 import http from 'node:http';
 import WebSocket, { WebSocketServer } from 'ws';
-import { makeServerMessenger, stringifySimple, invariant, } from './utils.js';
+import { makeMessenger, invariant, } from './utils.js';
 export {};
 export class RPCClientError extends Error {
 }
@@ -15,23 +15,13 @@ export function createServer(onError, transforms) {
         }
         return {};
     }
-    function broadcast(event) {
-        if (!wss.clients.size)
-            return;
-        const message = stringifySimple({ event });
-        for (const ws of wss.clients) {
-            if (ws.readyState === WebSocket.OPEN) {
-                ws.send(message);
-            }
-        }
-    }
     function listen(options = {}) {
         invariant(!wss, 'Already Listening');
         const heartbeats = new WeakMap();
         wss = new WebSocketServer({ noServer: true });
         wss.on('connection', (ws) => {
             const abortController = new AbortController();
-            const messenger = makeServerMessenger((data) => {
+            const messenger = makeMessenger((data) => {
                 ws.send(data);
             }, abortController.signal, transforms);
             heartbeats.set(ws, Date.now());
@@ -66,15 +56,12 @@ export function createServer(onError, transforms) {
                 }
             });
             const unsubscribe = options.onConnection?.({
-                send: (event) => {
-                    messenger.send({ event });
-                },
                 close: ws.close.bind(ws),
                 terminate: ws.terminate.bind(ws),
             });
             if (unsubscribe) {
                 ws.once('close', (code, reason) => {
-                    abortController.abort();
+                    abortController.abort(reason.toString());
                     unsubscribe({ code, reason: reason.toString() });
                 });
             }
@@ -136,5 +123,5 @@ export function createServer(onError, transforms) {
             server.listen(options.port ?? process.env.PORT ?? 3000, resolve);
         });
     }
-    return { router, broadcast, listen };
+    return { router, listen };
 }
