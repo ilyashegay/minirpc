@@ -25,10 +25,10 @@ export function createClient({ transforms, } = {}) {
             const stream = await promise;
             invariant(stream instanceof ReadableStream);
             const reader = stream.getReader();
-            signal?.addEventListener('abort', () => {
-                if (stream.locked)
-                    void reader.cancel(signal.reason);
-            });
+            const onAbort = () => {
+                void reader.cancel(signal?.reason);
+            };
+            signal?.addEventListener('abort', onAbort);
             try {
                 for (;;) {
                     const { done, value } = await reader.read();
@@ -45,6 +45,7 @@ export function createClient({ transforms, } = {}) {
             }
             finally {
                 reader.releaseLock();
+                signal?.removeEventListener('abort', onAbort);
             }
         };
         return promise;
