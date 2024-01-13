@@ -76,9 +76,10 @@ export function createClient<Router extends ClientRoutes>({
 			const reader = stream.getReader() as ReadableStreamDefaultReader<
 				R extends ReadableStream<infer P> ? P : never
 			>
-			signal?.addEventListener('abort', () => {
-				if (stream.locked) void reader.cancel(signal.reason)
-			})
+			const onAbort = () => {
+				void reader.cancel(signal?.reason)
+			}
+			signal?.addEventListener('abort', onAbort)
 			try {
 				for (;;) {
 					const { done, value } = await reader.read()
@@ -92,6 +93,7 @@ export function createClient<Router extends ClientRoutes>({
 				throw error
 			} finally {
 				reader.releaseLock()
+				signal?.removeEventListener('abort', onAbort)
 			}
 		}
 		return promise
