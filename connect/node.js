@@ -1,7 +1,11 @@
 import WebSocket from 'ws'
+import * as browser from './browser'
 
 /** @type {import('./index').connect} */
 export async function connect(url, protocols, onMessage, signal) {
+	if (globalThis.WebSocket) {
+		return browser.connect(url, protocols, onMessage, signal)
+	}
 	signal.throwIfAborted()
 	const ws = new WebSocket(url, protocols)
 	ws.binaryType = 'nodebuffer'
