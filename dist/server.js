@@ -125,3 +125,29 @@ export function createServer(onError, transforms) {
     }
     return { router, listen };
 }
+export function makeBroadcast(onpull) {
+    const subs = new Set();
+    return {
+        active: () => subs.size > 0,
+        push: (payload) => {
+            for (const controller of subs) {
+                controller.enqueue(payload);
+            }
+        },
+        pull: () => {
+            let c;
+            return new ReadableStream({
+                start(controller) {
+                    c = controller;
+                    subs.add(controller);
+                    if (onpull) {
+                        controller.enqueue(onpull(subs.size === 1));
+                    }
+                },
+                cancel() {
+                    subs.delete(c);
+                },
+            });
+        },
+    };
+}

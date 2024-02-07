@@ -26,3 +26,8 @@ export declare function createServer(onError: (error: unknown) => void, transfor
     router: <Routes extends ServerRoutes>(routes: Routes) => ClientRoutes<Routes>;
     listen: (options?: Options) => Promise<void>;
 };
+export declare function makeBroadcast<T>(onpull?: (first: boolean) => T): {
+    active: () => boolean;
+    push: (payload: T) => void;
+    pull: () => ReadableStream<T>;
+};
