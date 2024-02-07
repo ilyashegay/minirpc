@@ -172,3 +172,30 @@ export function createServer(
 
 	return { router, listen }
 }
+
+export function makeBroadcast<T>(onpull?: (first: boolean) => T) {
+	const subs = new Set<ReadableStreamDefaultController<T>>()
+	return {
+		active: () => subs.size > 0,
+		push: (payload: T) => {
+			for (const controller of subs) {
+				controller.enqueue(payload)
+			}
+		},
+		pull: () => {
+			let c: ReadableStreamDefaultController<T>
+			return new ReadableStream<T>({
+				start(controller) {
+					c = controller
+					subs.add(controller)
+					if (onpull) {
+						controller.enqueue(onpull(subs.size === 1))
+					}
+				},
+				cancel() {
+					subs.delete(c)
+				},
+			})
+		},
+	}
+}
