@@ -250,6 +250,9 @@ export function createWebSocketClient(options: WebSocketClientOptions) {
 						)
 					}
 				}
+				void connection.closed.then(() => {
+					connection = undefined
+				})
 				if (queue?.length) {
 					for (const message of queue) {
 						connection.send(message)
@@ -257,7 +260,8 @@ export function createWebSocketClient(options: WebSocketClientOptions) {
 					queue = undefined
 				}
 				await options.onConnection?.(connection)
-				await connection.closed
+				// eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+				await connection?.closed
 				connection = undefined
 			}
 		} catch (error) {
