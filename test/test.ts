@@ -1,5 +1,5 @@
-import { test } from 'uvu'
-import * as assert from 'uvu/assert'
+import { test } from 'node:test'
+import assert from 'node:assert/strict'
 import { createServer } from '../lib/server'
 
 export type Router = typeof router
@@ -79,15 +79,13 @@ void client.listen(
 	},
 )
 
-test('add', async () => {
-	assert.is(await api.add(123, 456), 579)
+await test('add', async () => {
+	assert.equal(await api.add(123, 456), 579)
 })
-test('list', async () => {
+await test('list', async () => {
 	const list: number[] = []
 	await api.list(10).subscribe((n) => {
 		list.push(n)
 	})
-	assert.equal(list, [10, 11, 12, 13])
+	assert.deepEqual(list, [10, 11, 12, 13])
 })
-
-test.run()
