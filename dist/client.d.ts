@@ -19,8 +19,9 @@ type BackoffOptions = {
     startingDelay: number;
     timeMultiple: number;
 };
-export declare function createClient<Router extends ClientRoutes>({ transforms, }?: {
+export declare function createClient<Router extends ClientRoutes>({ transforms, onError, }?: {
     transforms?: DevalueTransforms;
+    onError?: (error: unknown) => void;
 }): {
     router: Router;
     listen: (url: string, handler: (connection: Connection) => void | PromiseLike<void>, options?: Options) => Promise<void>;

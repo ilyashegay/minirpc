@@ -20,7 +20,10 @@ export type ClientRoutes<R extends ServerRoutes = ServerRoutes> = {
     [key in keyof R]: (...args: Parameters<R[key]>) => ObservablePromise<Awaited<ReturnType<R[key]>>>;
 };
 export type ObservablePromise<T> = Promise<T> & (T extends ReadableStream<infer R> ? {
-    subscribe: (observer: (value: R) => void, signal?: AbortSignal) => Promise<void>;
+    subscribe: (observer: (value: R) => unknown, options?: {
+        signal?: AbortSignal;
+        onError?: (error: unknown) => void;
+    }) => void;
 } : Record<string, never>);
 export declare function invariant(condition: unknown, message?: string): asserts condition;
 export declare function makeMessenger(send: (data: SocketData, enqueue?: boolean) => void, signal: AbortSignal, transforms?: DevalueTransforms): {

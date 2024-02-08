@@ -1,6 +1,6 @@
 import { connect } from '@minirpc/connect';
 import { makeMessenger, invariant, } from './utils.js';
-export function createClient({ transforms, } = {}) {
+export function createClient({ transforms, onError, } = {}) {
     let started = false;
     let nextRequestId = 1;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -21,32 +21,40 @@ export function createClient({ transforms, } = {}) {
             }
             queries.set(id, { resolve, reject });
         });
-        promise.subscribe = async (observer, signal) => {
-            const stream = await promise;
-            invariant(stream instanceof ReadableStream);
-            const reader = stream.getReader();
-            const onAbort = () => {
-                void reader.cancel(signal?.reason);
-            };
-            signal?.addEventListener('abort', onAbort);
-            try {
-                for (;;) {
-                    const { done, value } = await reader.read();
-                    if (done)
-                        break;
-                    observer(value);
+        promise.subscribe = (observer, options = {}) => {
+            const handleError = options.onError ?? onError ?? console.error.bind(console);
+            promise
+                .then(async (stream) => {
+                invariant(stream instanceof ReadableStream);
+                const reader = stream.getReader();
+                const onAbort = () => {
+                    void reader.cancel(options.signal?.reason);
+                };
+                options.signal?.addEventListener('abort', onAbort);
+                try {
+                    for (;;) {
+                        const { done, value } = await reader.read();
+                        if (done)
+                            break;
+                        try {
+                            Promise.resolve(observer(value)).catch(handleError);
+                        }
+                        catch (error) {
+                            handleError(error);
+                        }
+                    }
                 }
-            }
-            catch (error) {
+                finally {
+                    reader.releaseLock();
+                    options.signal?.removeEventListener('abort', onAbort);
+                }
+            })
+                .catch((error) => {
                 if (error === connectionClosedException) {
                     return;
                 }
-                throw error;
-            }
-            finally {
-                reader.releaseLock();
-                signal?.removeEventListener('abort', onAbort);
-            }
+                handleError(error);
+            });
         };
         return promise;
     }
@@ -129,7 +137,7 @@ async function backoff(error, attempt, options, signal) {
         }, delay);
         const onAbort = () => {
             clearTimeout(timeout);
-            reject(signal.reason);
+            reject(new DOMException(String(signal.reason), 'AbortError'));
         };
         signal.addEventListener('abort', onAbort);
     });
