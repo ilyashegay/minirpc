@@ -40,8 +40,10 @@ type PromiseHandle<T> = {
 
 export function createClient<Router extends ClientRoutes>({
 	transforms,
+	onError,
 }: {
 	transforms?: DevalueTransforms
+	onError?: (error: unknown) => void
 } = {}) {
 	let started = false
 	let nextRequestId = 1
@@ -70,31 +72,38 @@ export function createClient<Router extends ClientRoutes>({
 			}
 			queries.set(id, { resolve, reject })
 		}) as unknown as ObservablePromise<R>
-		promise.subscribe = async (observer, signal) => {
-			const stream = await promise
-			invariant(stream instanceof ReadableStream)
-			const reader = stream.getReader() as ReadableStreamDefaultReader<
-				R extends ReadableStream<infer P> ? P : never
-			>
-			const onAbort = () => {
-				void reader.cancel(signal?.reason)
-			}
-			signal?.addEventListener('abort', onAbort)
-			try {
-				for (;;) {
-					const { done, value } = await reader.read()
-					if (done) break
-					observer(value)
-				}
-			} catch (error) {
-				if (error === connectionClosedException) {
-					return
-				}
-				throw error
-			} finally {
-				reader.releaseLock()
-				signal?.removeEventListener('abort', onAbort)
-			}
+		promise.subscribe = (observer, options = {}) => {
+			const handleError =
+				options.onError ?? onError ?? console.error.bind(console)
+			promise
+				.then(async (stream) => {
+					invariant(stream instanceof ReadableStream)
+					const reader = (stream as ReadableStream<R>).getReader()
+					const onAbort = () => {
+						void reader.cancel(options.signal?.reason)
+					}
+					options.signal?.addEventListener('abort', onAbort)
+					try {
+						for (;;) {
+							const { done, value } = await reader.read()
+							if (done) break
+							try {
+								Promise.resolve(observer(value)).catch(handleError)
+							} catch (error) {
+								handleError(error)
+							}
+						}
+					} finally {
+						reader.releaseLock()
+						options.signal?.removeEventListener('abort', onAbort)
+					}
+				})
+				.catch((error) => {
+					if (error === connectionClosedException) {
+						return
+					}
+					handleError(error)
+				})
 		}
 		return promise
 	}
@@ -193,7 +202,7 @@ async function backoff(
 		}, delay)
 		const onAbort = () => {
 			clearTimeout(timeout)
-			reject(signal.reason)
+			reject(new DOMException(String(signal.reason), 'AbortError'))
 		}
 		signal.addEventListener('abort', onAbort)
 	})

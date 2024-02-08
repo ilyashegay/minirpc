@@ -26,9 +26,12 @@ export type ObservablePromise<T> = Promise<T> &
 	(T extends ReadableStream<infer R>
 		? {
 				subscribe: (
-					observer: (value: R) => void,
-					signal?: AbortSignal,
-				) => Promise<void>
+					observer: (value: R) => unknown,
+					options?: {
+						signal?: AbortSignal
+						onError?: (error: unknown) => void
+					},
+				) => void
 		  }
 		: Record<string, never>)
 
