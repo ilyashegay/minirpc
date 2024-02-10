@@ -1,4 +1,3 @@
-import { connect, type Connection } from '@minirpc/connect'
 import {
 	type ClientRoutes,
 	type SocketData,
@@ -10,19 +9,22 @@ import {
 	invariant,
 } from './utils.js'
 
-export type { Connection, DevalueTransforms }
+export type { DevalueTransforms }
 
-export type Options = {
-	protocols?: string[]
-	signal?: AbortSignal
-	backoff?: Partial<BackoffOptions>
+export type Connection = {
+	protocol: string
+	extensions: string
+	closed: Promise<{ code?: number; reason?: string }>
+	send(message: SocketData): void
+	close(code?: number, reason?: string): void
 }
 
-export type WebSocketClientOptions = Options & {
+export type Adapter = (options: {
 	url: string
-	onConnection?: (connection: Connection) => void | PromiseLike<void>
-	onMessage: (message: SocketData) => void
-}
+	protocols?: string | string[]
+	signal: AbortSignal
+	onMessage: (data: SocketData) => void
+}) => Promise<Connection>
 
 type BackoffOptions = {
 	jitter: boolean
@@ -33,29 +35,79 @@ type BackoffOptions = {
 	timeMultiple: number
 }
 
-type PromiseHandle<T> = {
-	resolve: Parameters<ConstructorParameters<typeof Promise<T>>[0]>[0]
-	reject: Parameters<ConstructorParameters<typeof Promise<T>>[0]>[1]
-}
-
-export function createClient<Router extends ClientRoutes>({
-	transforms,
-	onError,
-}: {
+export default function createClient<Router extends ClientRoutes>(options: {
+	url: string
+	protocols?: string | string[]
+	signal?: AbortSignal
+	backoff?: Partial<BackoffOptions>
 	transforms?: DevalueTransforms
+	adapter?: Adapter
+	onConnection?: (connection: Connection) => void | PromiseLike<void>
 	onError?: (error: unknown) => void
-} = {}) {
-	let started = false
-	let nextRequestId = 1
+}) {
+	type PromiseHandle<T> = {
+		resolve: Parameters<ConstructorParameters<typeof Promise<T>>[0]>[0]
+		reject: Parameters<ConstructorParameters<typeof Promise<T>>[0]>[1]
+	}
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	const queries = new Map<number, PromiseHandle<any>>()
+	let nextRequestId = 1
 	let messenger: ReturnType<typeof makeMessenger> | undefined
 	let queue: ClientMessage[] | undefined
+	const onError = options.onError ?? console.error.bind(console)
 
 	const connectionClosedException = new DOMException(
 		'Connection closed',
 		'WebSocketConnectionClosedError',
 	)
+
+	const client = createWebSocketClient({
+		...options,
+		async onConnection(connection) {
+			const controller = new AbortController()
+			try {
+				messenger = makeMessenger(
+					client.send,
+					controller.signal,
+					options.transforms,
+				)
+				queue?.forEach(messenger.send)
+				queue = undefined
+				await options.onConnection?.(connection)
+			} finally {
+				controller.abort(connectionClosedException)
+				messenger = undefined
+				for (const handle of queries.values()) {
+					handle.reject(connectionClosedException)
+				}
+			}
+		},
+		onMessage(data) {
+			invariant(messenger)
+			const message = messenger.parse(data) as ServerMessage | undefined
+			if (message === undefined) return
+			const handle = queries.get(message.id)
+			if (!handle) {
+				console.error(`Unknown response ID: ${message.id}`)
+				return
+			}
+			queries.delete(message.id)
+			if ('result' in message) {
+				handle.resolve(message.result)
+			} else {
+				handle.reject(
+					typeof message.error === 'string' ? message.error : 'request failed',
+				)
+			}
+		},
+	})
+	const interval = setInterval(() => {
+		client.send('heartbeat')
+	}, 15e3)
+	options.signal?.addEventListener('abort', () => {
+		clearInterval(interval)
+	})
+	void client.listen().catch(onError)
 
 	function query<P extends unknown[], R>(
 		method: string,
@@ -73,11 +125,10 @@ export function createClient<Router extends ClientRoutes>({
 			queries.set(id, { resolve, reject })
 		}) as unknown as ObservablePromise<R>
 		promise.subscribe = (observer, options = {}) => {
-			const handleError =
-				options.onError ?? onError ?? console.error.bind(console)
+			const handleError = options.onError ?? onError
 			promise
 				.then(async (stream) => {
-					invariant(stream instanceof ReadableStream)
+					invariant(stream instanceof ReadableStream, 'Expected ReadableStream')
 					const reader = (stream as ReadableStream<R>).getReader()
 					const onAbort = () => {
 						void reader.cancel(options.signal?.reason)
@@ -108,7 +159,7 @@ export function createClient<Router extends ClientRoutes>({
 		return promise
 	}
 
-	const router = new Proxy({} as Router, {
+	return new Proxy({} as Router, {
 		get(_, prop) {
 			return (...args: unknown[]) => {
 				if (typeof prop === 'string') {
@@ -117,64 +168,6 @@ export function createClient<Router extends ClientRoutes>({
 			}
 		},
 	})
-
-	async function listen(
-		url: string,
-		handler: (connection: Connection) => void | PromiseLike<void>,
-		options: Options = {},
-	) {
-		invariant(!started, 'Already listening')
-		started = true
-
-		const client = createWebSocketClient({
-			url,
-			async onConnection(connection) {
-				const controller = new AbortController()
-				try {
-					messenger = makeMessenger(client.send, controller.signal, transforms)
-					queue?.forEach(messenger.send)
-					queue = undefined
-					await handler(connection)
-				} finally {
-					controller.abort(connectionClosedException)
-					messenger = undefined
-					for (const handle of queries.values()) {
-						handle.reject(connectionClosedException)
-					}
-				}
-			},
-			onMessage(data) {
-				invariant(messenger)
-				const message = messenger.parse(data) as ServerMessage | undefined
-				if (message === undefined) return
-				const handle = queries.get(message.id)
-				if (!handle) {
-					console.error(`Unknown response ID: ${message.id}`)
-					return
-				}
-				queries.delete(message.id)
-				if ('result' in message) {
-					handle.resolve(message.result)
-				} else {
-					handle.reject(
-						typeof message.error === 'string'
-							? message.error
-							: 'request failed',
-					)
-				}
-			},
-			...options,
-		})
-		const interval = setInterval(() => {
-			client.send('heartbeat')
-		}, 15e3)
-		options.signal?.addEventListener('abort', () => {
-			clearInterval(interval)
-		})
-		return client.listen()
-	}
-
-	return { router, listen }
 }
 
 async function backoff(
@@ -208,7 +201,76 @@ async function backoff(
 	})
 }
 
-export function createWebSocketClient(options: WebSocketClientOptions) {
+const nativeAdapter: Adapter = async ({
+	url,
+	protocols,
+	signal,
+	onMessage,
+}) => {
+	signal.throwIfAborted()
+	const ws = new WebSocket(url, protocols)
+	ws.binaryType = 'arraybuffer'
+	await new Promise<void>((resolve, reject) => {
+		const onOpen = () => {
+			ws.removeEventListener('error', onError)
+			signal.removeEventListener('abort', onAbort)
+			resolve()
+		}
+		const onError = (error: unknown) => {
+			ws.removeEventListener('open', onOpen)
+			signal.removeEventListener('abort', onAbort)
+			// eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors
+			reject(error)
+		}
+		const onAbort = () => {
+			ws.removeEventListener('open', onOpen)
+			ws.removeEventListener('error', onError)
+			ws.close(1000, String(signal.reason))
+			// eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors
+			reject(signal.reason)
+		}
+		ws.addEventListener('open', onOpen)
+		ws.addEventListener('error', onError)
+		signal.addEventListener('abort', onAbort)
+	})
+	ws.addEventListener('message', (event) => {
+		onMessage(event.data as SocketData)
+	})
+	return {
+		protocol: ws.protocol,
+		extensions: ws.extensions,
+		closed: new Promise((resolve) => {
+			const onClose = (event: CloseEvent) => {
+				signal.removeEventListener('abort', onAbort)
+				resolve({ code: event.code, reason: event.reason })
+			}
+			const onAbort = () => {
+				const reason = String(signal.reason)
+				ws.removeEventListener('close', onClose)
+				ws.close(1000, reason)
+				resolve({ code: 1000, reason })
+			}
+			ws.addEventListener('close', onClose)
+			signal.addEventListener('abort', onAbort)
+		}),
+		send(data) {
+			ws.send(data)
+		},
+		close(code, reason) {
+			ws.close(code, reason)
+		},
+	}
+}
+
+function createWebSocketClient(options: {
+	url: string
+	protocols?: string | string[]
+	signal?: AbortSignal
+	backoff?: Partial<BackoffOptions>
+	adapter?: Adapter
+	onConnection?: (connection: Connection) => void | PromiseLike<void>
+	onMessage: (message: SocketData) => void
+}) {
 	const abortController = new AbortController()
 	if (options.signal) {
 		const signal = options.signal
@@ -243,12 +305,12 @@ export function createWebSocketClient(options: WebSocketClientOptions) {
 			for (;;) {
 				for (let attempt = 0; ; ) {
 					try {
-						connection = await connect(
-							options.url,
-							options.protocols,
-							options.onMessage,
-							abortController.signal,
-						)
+						connection = await (options.adapter ?? nativeAdapter)({
+							url: options.url,
+							protocols: options.protocols,
+							onMessage: options.onMessage,
+							signal: abortController.signal,
+						})
 						break
 					} catch (error) {
 						await backoff(
