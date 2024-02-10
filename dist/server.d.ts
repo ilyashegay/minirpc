@@ -1,33 +1,38 @@
 /// <reference types="node" />
-/// <reference types="node" />
-/// <reference types="node" />
-import http from 'node:http';
-import type { Duplex } from 'node:stream';
-import { type ClientRoutes, type ServerRoutes, type DevalueTransforms } from './utils.js';
+import { type ClientRoutes, type ServerRoutes, type DevalueTransforms, type SocketData } from './utils.js';
 export { type DevalueTransforms };
 export declare class RPCClientError extends Error {
 }
-export type Connection = {
-    close: (code?: number, data?: string | Buffer) => void;
-    terminate: () => void;
+export type MiniRPCServer = {
+    router<R extends ServerRoutes>(routes: R): ClientRoutes<R>;
+    run(options: {
+        signal?: AbortSignal;
+    }): Connector;
 };
-export type Options = {
-    port?: number;
-    signal?: AbortSignal;
+export type Context<T> = {
+    get(): T;
+    set(value: T): void;
+    update(updateFn: (value: T) => T): void;
+};
+type Client = {
+    key: WeakKey;
+    send: (data: SocketData) => void;
+    terminate(): void;
+};
+type Connector = (client: Client) => {
+    message: (data: SocketData) => void;
+    close: (code: number, reason: string | Buffer) => void;
+};
+export declare function createServer(options: {
     heartbeat?: number;
-    onRequest?: http.RequestListener;
-    onUpgrade?: (request: http.IncomingMessage, socket: Duplex, head: Buffer) => number | undefined | Promise<number | undefined>;
-    onConnection?: (connection: Connection) => ((event: {
-        code: number;
-        reason: string;
-    }) => void) | undefined;
-};
-export declare function createServer(onError: (error: unknown) => void, transforms?: DevalueTransforms): {
-    router: <Routes extends ServerRoutes>(routes: Routes) => ClientRoutes<Routes>;
-    listen: (options?: Options) => Promise<void>;
-};
-export declare function makeBroadcast<T>(onpull?: (first: boolean) => T): {
-    active: () => boolean;
+    transforms?: DevalueTransforms;
+    onError: (error: unknown) => void;
+}): MiniRPCServer;
+export declare function createChannel<T>(onpull?: (first: boolean) => T): {
+    readonly size: number;
     push: (payload: T) => void;
     pull: () => ReadableStream<T>;
 };
+export declare function getContextKey(): WeakKey;
+export declare function createContext<T = undefined>(): (key?: WeakKey) => Context<T | undefined>;
+export declare function createContext<T>(initialValue: T): (key?: WeakKey) => Context<T>;

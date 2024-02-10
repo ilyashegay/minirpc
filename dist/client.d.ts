@@ -1,16 +1,21 @@
-import { type Connection } from '@minirpc/connect';
 import { type ClientRoutes, type SocketData, type DevalueTransforms } from './utils.js';
-export type { Connection, DevalueTransforms };
-export type Options = {
-    protocols?: string[];
-    signal?: AbortSignal;
-    backoff?: Partial<BackoffOptions>;
+export type { DevalueTransforms };
+export type Connection = {
+    protocol: string;
+    extensions: string;
+    closed: Promise<{
+        code?: number;
+        reason?: string;
+    }>;
+    send(message: SocketData): void;
+    close(code?: number, reason?: string): void;
 };
-export type WebSocketClientOptions = Options & {
+export type Adapter = (options: {
     url: string;
-    onConnection?: (connection: Connection) => void | PromiseLike<void>;
-    onMessage: (message: SocketData) => void;
-};
+    protocols?: string | string[];
+    signal: AbortSignal;
+    onMessage: (data: SocketData) => void;
+}) => Promise<Connection>;
 type BackoffOptions = {
     jitter: boolean;
     maxDelay: number;
@@ -19,14 +24,13 @@ type BackoffOptions = {
     startingDelay: number;
     timeMultiple: number;
 };
-export declare function createClient<Router extends ClientRoutes>({ transforms, onError, }?: {
+export default function createClient<Router extends ClientRoutes>(options: {
+    url: string;
+    protocols?: string | string[];
+    signal?: AbortSignal;
+    backoff?: Partial<BackoffOptions>;
     transforms?: DevalueTransforms;
+    adapter?: Adapter;
+    onConnection?: (connection: Connection) => void | PromiseLike<void>;
     onError?: (error: unknown) => void;
-}): {
-    router: Router;
-    listen: (url: string, handler: (connection: Connection) => void | PromiseLike<void>, options?: Options) => Promise<void>;
-};
-export declare function createWebSocketClient(options: WebSocketClientOptions): {
-    send: (message: SocketData, enqueue?: boolean) => void;
-    listen: () => Promise<void>;
-};
+}): Router;
