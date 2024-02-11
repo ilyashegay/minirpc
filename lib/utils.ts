@@ -19,10 +19,10 @@ export type ServerRoutes = Record<string, (...args: any[]) => any>
 export type ClientRoutes<R extends ServerRoutes = ServerRoutes> = {
 	[key in keyof R]: (
 		...args: Parameters<R[key]>
-	) => ObservablePromise<Awaited<ReturnType<R[key]>>>
+	) => Result<Awaited<ReturnType<R[key]>>>
 }
 
-export type ObservablePromise<T> = Promise<T> &
+export type Result<T> = Promise<T> &
 	(T extends ReadableStream<infer R>
 		? {
 				subscribe: (
@@ -35,6 +35,25 @@ export type ObservablePromise<T> = Promise<T> &
 		  }
 		: Record<string, never>)
 
+export function isClientMessage(
+	message: Record<string, unknown>,
+): message is ClientMessage {
+	return (
+		typeof message.id === 'number' &&
+		typeof message.method === 'string' &&
+		Array.isArray(message.params)
+	)
+}
+
+export function isServerMessage(
+	message: Record<string, unknown>,
+): message is ServerMessage {
+	return (
+		typeof message.id === 'number' &&
+		('result' in message || 'error' in message)
+	)
+}
+
 export function invariant(
 	condition: unknown,
 	message?: string,
@@ -42,9 +61,8 @@ export function invariant(
 	if (!condition) throw new Error(message)
 }
 
-export function makeMessenger(
-	send: (data: SocketData, enqueue?: boolean) => void,
-	signal: AbortSignal,
+export function createTransport(
+	send: (data: SocketData) => void,
 	transforms?: DevalueTransforms,
 ) {
 	type StreamMessage =
@@ -63,6 +81,8 @@ export function makeMessenger(
 	const outboundStreams = new Map<number, AbortController>()
 	let nextStreamId = 1
 	let expectedChunkId: number | undefined
+	let lastMessageTime = 0
+	let closed = false
 
 	const reducers: Record<string, (value: any) => any> = {}
 	const revivers: Record<string, (value: any) => any> = {}
@@ -95,19 +115,11 @@ export function makeMessenger(
 		})
 	}
 
-	signal.addEventListener('abort', () => {
-		for (const stream of inboundStreams.values()) {
-			stream.controller.error(signal.reason)
-			stream.canceled = true
-		}
-		for (const stream of outboundStreams.values()) {
-			stream.abort(signal.reason)
-		}
-	})
-
 	function receiveMessage(
 		data: SocketData,
-	): ClientMessage | ServerMessage | 'heartbeat' | undefined {
+	): ClientMessage | ServerMessage | undefined {
+		invariant(!closed)
+		lastMessageTime = Date.now()
 		if (expectedChunkId) {
 			const stream = inboundStreams.get(expectedChunkId)
 			invariant(stream, `Unknown stream id ${expectedChunkId}`)
@@ -117,8 +129,12 @@ export function makeMessenger(
 			return
 		}
 		invariant(typeof data === 'string', 'Unexpected binary message')
-		if (data === 'heartbeat') {
-			return data
+		if (data === 'ping') {
+			send('pong')
+			return
+		}
+		if (data === 'pong') {
+			return
 		}
 		const message = JSON.parse(data) as StreamMessage | unknown[]
 		if (Array.isArray(message)) {
@@ -191,7 +207,30 @@ export function makeMessenger(
 	return {
 		parse: receiveMessage,
 		send: (message: ClientMessage | ServerMessage) => {
+			invariant(!closed)
 			send(devalue.stringify(message, reducers))
+		},
+		close(reason?: string | Error) {
+			invariant(!closed)
+			closed = true
+			for (const stream of inboundStreams.values()) {
+				stream.controller.error(reason)
+				stream.canceled = true
+			}
+			for (const stream of outboundStreams.values()) {
+				stream.abort(reason)
+			}
+		},
+		getTimeUntilExpectedExpiry(interval: number) {
+			return lastMessageTime + interval - Date.now()
+		},
+		ping(latency: number, onResult: (alive: boolean) => void) {
+			invariant(!closed)
+			send('ping')
+			const pingTime = Date.now()
+			setTimeout(() => {
+				if (!closed) onResult(lastMessageTime >= pingTime)
+			}, latency)
 		},
 	}
 }

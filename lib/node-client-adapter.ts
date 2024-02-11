@@ -12,18 +12,16 @@ export default (): Adapter =>
 				signal.removeEventListener('abort', onAbort)
 				resolve()
 			}
-			const onError = (error: unknown) => {
+			const onError = (error: Error) => {
 				ws.off('open', onOpen)
 				signal.removeEventListener('abort', onAbort)
-				// eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors
 				reject(error)
 			}
 			const onAbort = () => {
 				ws.off('open', onOpen)
 				ws.off('error', onError)
-				ws.close(1000, String(signal.reason))
-				// eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors
-				reject(signal.reason)
+				ws.close(1000)
+				reject(signal.reason as Error)
 			}
 			ws.once('open', onOpen)
 			ws.once('error', onError)
@@ -38,13 +36,14 @@ export default (): Adapter =>
 			closed: new Promise((resolve) => {
 				const onClose = (code: number, reason: Buffer) => {
 					signal.removeEventListener('abort', onAbort)
-					resolve({ code, reason: String(reason) })
+					resolve({ code, reason: reason.toString() })
 				}
 				const onAbort = () => {
-					const reason = String(signal.reason)
 					ws.off('close', onClose)
-					ws.close(1000, reason)
-					resolve({ code: 1000, reason })
+					ws.once('close', (code, reason) => {
+						resolve({ code, reason: reason.toString() })
+					})
+					ws.close(1000)
 				}
 				ws.once('close', onClose)
 				signal.addEventListener('abort', onAbort)

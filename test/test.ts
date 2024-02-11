@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import createClient from '../lib/client'
-import { createServer, createContext } from '../lib/server'
+import { createServer, createContext, createChannel } from '../lib/server'
 import serve from '../lib/node-server-adapter'
 import nodePRCClientAdapter from '../lib/node-client-adapter'
 
@@ -13,8 +13,7 @@ const server = createServer({
 	},
 })
 
-await serve({
-	rpc: server,
+await serve(server, {
 	port: 3000,
 	signal: abortController.signal,
 	onRequest(request, response) {
@@ -58,9 +57,31 @@ const api = createClient<typeof router>({
 	},
 })
 
+const channel = createChannel((a: number, b: number): number => {
+	const interval = setInterval(() => {
+		channel.push(++a + channel.size)
+		if (a === b) {
+			channel.push(0)
+			clearInterval(interval)
+		}
+	}, 50)
+	return a + channel.size
+})
+
 const numberContext = createContext(0)
+const mwCounterCtx = createContext(0)
 
 const router = server.router({
+	getRangeChannel: channel.pull,
+	...server
+		.use(() => {
+			mwCounterCtx().update((n) => n + 1)
+		})
+		.routes({
+			readMwCounterCtx() {
+				return mwCounterCtx().get()
+			},
+		}),
 	set(val: number) {
 		numberContext().set(val)
 	},
@@ -104,6 +125,21 @@ await test('list', async () => {
 		list.push(value)
 	}
 	assert.deepEqual(list, [10, 11, 12, 13, 100])
+})
+await test('mwCounterCtx', async () => {
+	assert.equal(await api.readMwCounterCtx(), 1)
+	assert.equal(await api.readMwCounterCtx(), 2)
+	assert.equal(await api.readMwCounterCtx(), 3)
+})
+await test('getRangeChannel', async () => {
+	const list: number[] = []
+	await new Promise<void>((resolve) => {
+		api.getRangeChannel(3, 7).subscribe((n) => {
+			list.push(n)
+			if (n === 0) resolve()
+		})
+	})
+	assert.deepEqual(list, [3, 5, 6, 7, 8, 0])
 })
 
 abortController.abort()

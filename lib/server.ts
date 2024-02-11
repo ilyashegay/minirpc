@@ -3,9 +3,8 @@ import {
 	type ServerRoutes,
 	type DevalueTransforms,
 	type SocketData,
-	type ClientMessage,
-	type ServerMessage,
-	makeMessenger,
+	createTransport,
+	isClientMessage,
 	invariant,
 } from './utils.js'
 
@@ -13,10 +12,7 @@ export { type DevalueTransforms }
 
 export class RPCClientError extends Error {}
 
-export type MiniRPCServer = {
-	router<R extends ServerRoutes>(routes: R): ClientRoutes<R>
-	run(options: { signal?: AbortSignal }): Connector
-}
+export type Server = ReturnType<typeof createServer>
 
 export type Context<T> = {
 	get(): T
@@ -24,24 +20,36 @@ export type Context<T> = {
 	update(updateFn: (value: T) => T): void
 }
 
-type Client = {
-	key: WeakKey
-	send: (data: SocketData) => void
-	terminate(): void
-}
-
-type Connector = (client: Client) => {
-	message: (data: SocketData) => void
-	close: (code: number, reason: string | Buffer) => void
+type Ware = {
+	use(fn: () => void): Ware
+	routes<R extends ServerRoutes>(routes: R): ClientRoutes<R>
 }
 
 export function createServer(options: {
-	heartbeat?: number
+	heartbeat?: { interval?: number; latency?: number }
 	transforms?: DevalueTransforms
-	onError: (error: unknown) => void
-}): MiniRPCServer {
+	onError?: (error: unknown) => void
+}) {
+	type Client = {
+		key: WeakKey
+		send: (data: SocketData) => void
+		terminate(): void
+	}
+	type Connector = (client: Client) => {
+		message: (data: SocketData) => void
+		close: (code: number, reason: string | Buffer) => void
+	}
+
 	const methods: ServerRoutes = {}
-	let interval: ReturnType<typeof setInterval> | undefined
+
+	const onError = options.onError ?? console.error.bind(console)
+	const heartbeat = {
+		interval: 60e3,
+		latency: 1e3,
+		...(options.heartbeat ?? {}),
+	}
+
+	const use = (fn: () => void): Ware => makeWare([fn])
 
 	function router<R extends ServerRoutes>(routes: R) {
 		for (const key of Object.keys(routes)) {
@@ -51,83 +59,104 @@ export function createServer(options: {
 		return {} as ClientRoutes<R>
 	}
 
-	function run({ signal }: { signal?: AbortSignal } = {}): Connector {
-		invariant(!interval, 'Already Listening')
-		const clients = new Set<Client>()
-		const heartbeats = new WeakMap<WeakKey, number>()
-		interval = setInterval(() => {
-			const limit = Date.now() - (options.heartbeat ?? 60e3)
-			for (const client of clients) {
-				if (heartbeats.get(client)! < limit) {
+	const init = (): Connector => (client) => {
+		const transport = createTransport(client.send, options.transforms)
+		let activityTimeout: ReturnType<typeof setTimeout> | undefined
+		function setActivityTimer() {
+			activityTimeout ??= setTimeout(
+				checkActivity,
+				transport.getTimeUntilExpectedExpiry(heartbeat.interval),
+			)
+		}
+		function checkActivity() {
+			if (transport.getTimeUntilExpectedExpiry(heartbeat.interval) > 0) {
+				setActivityTimer()
+				return
+			}
+			transport.ping(heartbeat.latency, (alive) => {
+				if (alive) {
+					setActivityTimer()
+				} else {
 					client.terminate()
 				}
-			}
-		}, 10e3)
-		signal?.addEventListener('abort', () => {
-			clearInterval(interval)
-			interval = undefined
-		})
-		return (client) => {
-			clients.add(client)
-			const abortController = new AbortController()
-			const messenger = makeMessenger(
-				client.send,
-				abortController.signal,
-				options.transforms,
-			) as {
-				parse: (data: SocketData) => ClientMessage | 'heartbeat' | undefined
-				send: (message: ServerMessage) => void
-			}
-			heartbeats.set(client.key, Date.now())
-			return {
-				message(data) {
-					const request = messenger.parse(data)
-					if (request === 'heartbeat') {
-						heartbeats.set(client.key, Date.now())
+			})
+		}
+		return {
+			message(data) {
+				let request: ReturnType<typeof transport.parse>
+				try {
+					request = transport.parse(data)
+					if (request === undefined) return
+					invariant(isClientMessage(request), 'Unknown message format')
+				} catch (error) {
+					onError(error)
+					return
+				}
+				try {
+					setActivityTimer()
+					const { id, method, params } = request
+					if (!(method in methods)) {
+						transport.send({ id, error: `Unknown method: ${method}` })
 						return
 					}
-					if (request === undefined) return
-					try {
-						const { id, method, params } = request
-						if (!(method in methods)) {
-							messenger.send({ id, error: `Unknown method: ${method}` })
-							return
-						}
-						Ctx.currentClient = client.key
-						Promise.resolve(methods[method](...params))
-							.then((result) => {
-								messenger.send({ id, result: result ?? null })
-							})
-							.catch((error) => {
-								if (error instanceof RPCClientError) {
-									messenger.send({ id: request.id, error: error.message })
-								} else {
-									messenger.send({ id: request.id, error: true })
-									options.onError(error)
-								}
-							})
-						Ctx.currentClient = undefined
-					} catch (error) {
-						if (error instanceof RPCClientError) {
-							messenger.send({ id: request.id, error: error.message })
-						} else {
-							messenger.send({ id: request.id, error: true })
-							options.onError(error)
-						}
+					Ctx.currentClient = client.key
+					Promise.resolve(methods[method](...params))
+						.then((result) => {
+							transport.send({ id, result: result ?? null })
+						})
+						.catch((error) => {
+							if (error instanceof RPCClientError) {
+								transport.send({ id, error: error.message })
+							} else {
+								transport.send({ id, error: true })
+								onError(error)
+							}
+						})
+					Ctx.currentClient = undefined
+				} catch (error) {
+					if (error instanceof RPCClientError) {
+						transport.send({ id: request.id, error: error.message })
+					} else {
+						transport.send({ id: request.id, error: true })
+						onError(error)
 					}
-				},
-				close(code, reason) {
-					clients.delete(client)
-					abortController.abort(reason.toString())
-				},
-			}
+				}
+			},
+			close(code, reason) {
+				clearTimeout(activityTimeout)
+				transport.close(reason.toString())
+			},
 		}
 	}
 
-	return { router, run }
+	return { router, use, init }
 }
 
-export function createChannel<T>(onpull?: (first: boolean) => T) {
+function makeWare(stack: (() => void)[]): Ware {
+	return {
+		use(fn) {
+			return makeWare([...stack, fn])
+		},
+		routes<R extends ServerRoutes>(routes: R) {
+			const methods: Record<string, unknown> = {}
+			for (const key of Object.keys(routes)) {
+				methods[key] = (...args: unknown[]) => {
+					for (const fn of stack) {
+						fn()
+					}
+					// eslint-disable-next-line @typescript-eslint/no-unsafe-return
+					return routes[key](...args)
+				}
+			}
+			return methods as R
+		},
+	}
+}
+
+export function createChannel<T, P extends unknown[] = []>(
+	onSubscribe?: (...args: P) => T | Promise<T>,
+	onUnsubscribe?: () => unknown,
+) {
 	const subs = new Set<ReadableStreamDefaultController<T>>()
 	return {
 		get size() {
@@ -138,18 +167,19 @@ export function createChannel<T>(onpull?: (first: boolean) => T) {
 				controller.enqueue(payload)
 			}
 		},
-		pull: () => {
+		pull: (...args: P) => {
 			let c: ReadableStreamDefaultController<T>
 			return new ReadableStream<T>({
-				start(controller) {
+				async start(controller) {
 					c = controller
-					subs.add(controller)
-					if (onpull) {
-						controller.enqueue(onpull(subs.size === 1))
+					if (onSubscribe) {
+						controller.enqueue(await onSubscribe(...args))
 					}
+					subs.add(controller)
 				},
-				cancel() {
+				async cancel() {
 					subs.delete(c)
+					await onUnsubscribe?.()
 				},
 			})
 		},
