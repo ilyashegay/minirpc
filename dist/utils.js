@@ -1,14 +1,25 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import * as devalue from 'devalue';
+export function isClientMessage(message) {
+    return (typeof message.id === 'number' &&
+        typeof message.method === 'string' &&
+        Array.isArray(message.params));
+}
+export function isServerMessage(message) {
+    return (typeof message.id === 'number' &&
+        ('result' in message || 'error' in message));
+}
 export function invariant(condition, message) {
     if (!condition)
         throw new Error(message);
 }
-export function makeMessenger(send, signal, transforms) {
+export function createTransport(send, transforms) {
     const inboundStreams = new Map();
     const outboundStreams = new Map();
     let nextStreamId = 1;
     let expectedChunkId;
+    let lastMessageTime = 0;
+    let closed = false;
     const reducers = {};
     const revivers = {};
     if (transforms) {
@@ -40,16 +51,9 @@ export function makeMessenger(send, signal, transforms) {
             },
         });
     };
-    signal.addEventListener('abort', () => {
-        for (const stream of inboundStreams.values()) {
-            stream.controller.error(signal.reason);
-            stream.canceled = true;
-        }
-        for (const stream of outboundStreams.values()) {
-            stream.abort(signal.reason);
-        }
-    });
     function receiveMessage(data) {
+        invariant(!closed);
+        lastMessageTime = Date.now();
         if (expectedChunkId) {
             const stream = inboundStreams.get(expectedChunkId);
             invariant(stream, `Unknown stream id ${expectedChunkId}`);
@@ -60,8 +64,12 @@ export function makeMessenger(send, signal, transforms) {
             return;
         }
         invariant(typeof data === 'string', 'Unexpected binary message');
-        if (data === 'heartbeat') {
-            return data;
+        if (data === 'ping') {
+            send('pong');
+            return;
+        }
+        if (data === 'pong') {
+            return;
         }
         const message = JSON.parse(data);
         if (Array.isArray(message)) {
@@ -136,7 +144,31 @@ export function makeMessenger(send, signal, transforms) {
     return {
         parse: receiveMessage,
         send: (message) => {
+            invariant(!closed);
             send(devalue.stringify(message, reducers));
+        },
+        close(reason) {
+            invariant(!closed);
+            closed = true;
+            for (const stream of inboundStreams.values()) {
+                stream.controller.error(reason);
+                stream.canceled = true;
+            }
+            for (const stream of outboundStreams.values()) {
+                stream.abort(reason);
+            }
+        },
+        getTimeUntilExpectedExpiry(interval) {
+            return lastMessageTime + interval - Date.now();
+        },
+        ping(latency, onResult) {
+            invariant(!closed);
+            send('ping');
+            const pingTime = Date.now();
+            setTimeout(() => {
+                if (!closed)
+                    onResult(lastMessageTime >= pingTime);
+            }, latency);
         },
     };
 }

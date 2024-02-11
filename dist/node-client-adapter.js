@@ -12,14 +12,12 @@ export default () => async ({ url, protocols, signal, onMessage }) => {
         const onError = (error) => {
             ws.off('open', onOpen);
             signal.removeEventListener('abort', onAbort);
-            // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors
             reject(error);
         };
         const onAbort = () => {
             ws.off('open', onOpen);
             ws.off('error', onError);
-            ws.close(1000, String(signal.reason));
-            // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors
+            ws.close(1000);
             reject(signal.reason);
         };
         ws.once('open', onOpen);
@@ -35,13 +33,14 @@ export default () => async ({ url, protocols, signal, onMessage }) => {
         closed: new Promise((resolve) => {
             const onClose = (code, reason) => {
                 signal.removeEventListener('abort', onAbort);
-                resolve({ code, reason: String(reason) });
+                resolve({ code, reason: reason.toString() });
             };
             const onAbort = () => {
-                const reason = String(signal.reason);
                 ws.off('close', onClose);
-                ws.close(1000, reason);
-                resolve({ code: 1000, reason });
+                ws.once('close', (code, reason) => {
+                    resolve({ code, reason: reason.toString() });
+                });
+                ws.close(1000);
             };
             ws.once('close', onClose);
             signal.addEventListener('abort', onAbort);

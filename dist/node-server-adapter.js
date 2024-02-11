@@ -2,10 +2,10 @@ import http from 'node:http';
 import { once } from 'node:events';
 import { WebSocketServer } from 'ws';
 import { invariant } from './utils.js';
-export default async function serve(options) {
+export default async function serve(server, options) {
     options.signal?.throwIfAborted();
     const wss = new WebSocketServer({ noServer: true });
-    const server = http.createServer(options.onRequest ??
+    const hts = http.createServer(options.onRequest ??
         ((req, res) => {
             const body = http.STATUS_CODES[426];
             res.writeHead(426, {
@@ -14,7 +14,7 @@ export default async function serve(options) {
             });
             res.end(body);
         }));
-    server.on('upgrade', (request, socket, head) => {
+    hts.on('upgrade', (request, socket, head) => {
         if (!options.onUpgrade) {
             wss.handleUpgrade(request, socket, head, (ws) => {
                 wss.emit('connection', ws, request);
@@ -57,7 +57,7 @@ export default async function serve(options) {
             ctx.error(500);
         }
     });
-    const connector = options.rpc.run({ signal: options.signal });
+    const connector = server.init();
     wss.on('connection', (ws) => {
         const client = connector({
             key: ws,
@@ -75,11 +75,11 @@ export default async function serve(options) {
         });
     });
     options.signal?.addEventListener('abort', () => {
-        server.close();
+        hts.close();
         wss.close();
     });
-    server.listen(options.port ?? process.env.PORT ?? 3000);
-    await once(server, 'listening');
-    server.on('error', options.onError);
+    hts.listen(options.port ?? process.env.PORT ?? 3000);
+    await once(hts, 'listening');
+    hts.on('error', options.onError);
     wss.on('error', options.onError);
 }

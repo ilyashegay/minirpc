@@ -1,10 +1,15 @@
-import { makeMessenger, invariant, } from './utils.js';
+import { createTransport, isClientMessage, invariant, } from './utils.js';
 export {};
 export class RPCClientError extends Error {
 }
 export function createServer(options) {
     const methods = {};
-    let interval;
+    const heartbeat = {
+        interval: 60e3,
+        latency: 1e3,
+        ...(options.heartbeat ?? {}),
+    };
+    const use = (fn) => makeWare([fn]);
     function router(routes) {
         for (const key of Object.keys(routes)) {
             if (key in methods)
@@ -13,78 +18,101 @@ export function createServer(options) {
         }
         return {};
     }
-    function run({ signal } = {}) {
-        invariant(!interval, 'Already Listening');
-        const clients = new Set();
-        const heartbeats = new WeakMap();
-        interval = setInterval(() => {
-            const limit = Date.now() - (options.heartbeat ?? 60e3);
-            for (const client of clients) {
-                if (heartbeats.get(client) < limit) {
+    const init = () => (client) => {
+        const transport = createTransport(client.send, options.transforms);
+        let activityTimeout;
+        function setActivityTimer() {
+            activityTimeout ??= setTimeout(checkActivity, transport.getTimeUntilExpectedExpiry(heartbeat.interval));
+        }
+        function checkActivity() {
+            if (transport.getTimeUntilExpectedExpiry(heartbeat.interval) > 0) {
+                setActivityTimer();
+                return;
+            }
+            transport.ping(heartbeat.latency, (alive) => {
+                if (alive) {
+                    setActivityTimer();
+                }
+                else {
                     client.terminate();
                 }
-            }
-        }, 10e3);
-        signal?.addEventListener('abort', () => {
-            clearInterval(interval);
-            interval = undefined;
-        });
-        return (client) => {
-            clients.add(client);
-            const abortController = new AbortController();
-            const messenger = makeMessenger(client.send, abortController.signal, options.transforms);
-            heartbeats.set(client.key, Date.now());
-            return {
-                message(data) {
-                    const request = messenger.parse(data);
-                    if (request === 'heartbeat') {
-                        heartbeats.set(client.key, Date.now());
-                        return;
-                    }
+            });
+        }
+        return {
+            message(data) {
+                let request;
+                try {
+                    request = transport.parse(data);
                     if (request === undefined)
                         return;
-                    try {
-                        const { id, method, params } = request;
-                        if (!(method in methods)) {
-                            messenger.send({ id, error: `Unknown method: ${method}` });
-                            return;
-                        }
-                        Ctx.currentClient = client.key;
-                        Promise.resolve(methods[method](...params))
-                            .then((result) => {
-                            messenger.send({ id, result: result ?? null });
-                        })
-                            .catch((error) => {
-                            if (error instanceof RPCClientError) {
-                                messenger.send({ id: request.id, error: error.message });
-                            }
-                            else {
-                                messenger.send({ id: request.id, error: true });
-                                options.onError(error);
-                            }
-                        });
-                        Ctx.currentClient = undefined;
+                    invariant(isClientMessage(request));
+                }
+                catch (error) {
+                    options.onError(error);
+                    return;
+                }
+                try {
+                    setActivityTimer();
+                    const { id, method, params } = request;
+                    if (!(method in methods)) {
+                        transport.send({ id, error: `Unknown method: ${method}` });
+                        return;
                     }
-                    catch (error) {
+                    Ctx.currentClient = client.key;
+                    Promise.resolve(methods[method](...params))
+                        .then((result) => {
+                        transport.send({ id, result: result ?? null });
+                    })
+                        .catch((error) => {
                         if (error instanceof RPCClientError) {
-                            messenger.send({ id: request.id, error: error.message });
+                            transport.send({ id, error: error.message });
                         }
                         else {
-                            messenger.send({ id: request.id, error: true });
+                            transport.send({ id, error: true });
                             options.onError(error);
                         }
+                    });
+                    Ctx.currentClient = undefined;
+                }
+                catch (error) {
+                    if (error instanceof RPCClientError) {
+                        transport.send({ id: request.id, error: error.message });
                     }
-                },
-                close(code, reason) {
-                    clients.delete(client);
-                    abortController.abort(reason.toString());
-                },
-            };
+                    else {
+                        transport.send({ id: request.id, error: true });
+                        options.onError(error);
+                    }
+                }
+            },
+            close(code, reason) {
+                clearTimeout(activityTimeout);
+                transport.close(reason.toString());
+            },
         };
-    }
-    return { router, run };
+    };
+    return { router, use, init };
 }
-export function createChannel(onpull) {
+function makeWare(stack) {
+    return {
+        use(fn) {
+            return makeWare([...stack, fn]);
+        },
+        routes(routes) {
+            const methods = {};
+            for (const key of Object.keys(routes)) {
+                methods[key] = (...args) => {
+                    for (const fn of stack) {
+                        fn();
+                    }
+                    // eslint-disable-next-line @typescript-eslint/no-unsafe-return
+                    return routes[key](...args);
+                };
+            }
+            return methods;
+        },
+    };
+}
+export function createChannel(onSubscribe, onUnsubscribe) {
     const subs = new Set();
     return {
         get size() {
@@ -95,18 +123,19 @@ export function createChannel(onpull) {
                 controller.enqueue(payload);
             }
         },
-        pull: () => {
+        pull: (...args) => {
             let c;
             return new ReadableStream({
-                start(controller) {
+                async start(controller) {
                     c = controller;
-                    subs.add(controller);
-                    if (onpull) {
-                        controller.enqueue(onpull(subs.size === 1));
+                    if (onSubscribe) {
+                        controller.enqueue(await onSubscribe(...args));
                     }
+                    subs.add(controller);
                 },
-                cancel() {
+                async cancel() {
                     subs.delete(c);
+                    await onUnsubscribe?.();
                 },
             });
         },

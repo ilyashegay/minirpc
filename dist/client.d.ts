@@ -24,13 +24,19 @@ type BackoffOptions = {
     startingDelay: number;
     timeMultiple: number;
 };
-export default function createClient<Router extends ClientRoutes>(options: {
+declare function backoff(error: unknown, attempt: number, options: BackoffOptions, signal: AbortSignal): Promise<void>;
+declare const _default: <Router extends ClientRoutes<import("./utils.js").ServerRoutes>>(options: {
     url: string;
-    protocols?: string | string[];
-    signal?: AbortSignal;
-    backoff?: Partial<BackoffOptions>;
-    transforms?: DevalueTransforms;
-    adapter?: Adapter;
-    onConnection?: (connection: Connection) => void | PromiseLike<void>;
-    onError?: (error: unknown) => void;
-}): Router;
+    protocols?: string | string[] | undefined;
+    signal?: AbortSignal | undefined;
+    backoff?: Partial<BackoffOptions> | undefined;
+    transforms?: DevalueTransforms | undefined;
+    heartbeat?: {
+        interval?: number | undefined;
+        latency?: number | undefined;
+    } | undefined;
+    adapter?: Adapter | undefined;
+    onConnection?: ((connection: Connection) => void | PromiseLike<void>) | undefined;
+    onError?: ((error: unknown) => void) | undefined;
+}) => Router;
+export default _default;
