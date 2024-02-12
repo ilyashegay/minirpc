@@ -25,6 +25,7 @@ export type Result<T> = Promise<T> & (T extends ReadableStream<infer R> ? {
         onError?: (error: unknown) => void;
     }) => void;
 } : Record<string, never>);
+export declare const connectionClosedException: DOMException;
 export declare function isClientMessage(message: Record<string, unknown>): message is ClientMessage;
 export declare function isServerMessage(message: Record<string, unknown>): message is ServerMessage;
 export declare function invariant(condition: unknown, message?: string): asserts condition;
@@ -32,6 +33,6 @@ export declare function createTransport(send: (data: SocketData) => void, transf
     parse: (data: SocketData) => ClientMessage | ServerMessage | undefined;
     send: (message: ClientMessage | ServerMessage) => void;
     close(reason?: string | Error): void;
-    getTimeUntilExpectedExpiry(interval: number): number;
+    getTimeSinceLastMessage(): number;
     ping(latency: number, onResult: (alive: boolean) => void): void;
 };

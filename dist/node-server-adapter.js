@@ -1,9 +1,10 @@
 import http from 'node:http';
 import { once } from 'node:events';
 import { WebSocketServer } from 'ws';
-import { invariant } from './utils.js';
-export default async function serve(server, options) {
+import { invariant, connectionClosedException } from './utils.js';
+export default async function serve(server, options = {}) {
     options.signal?.throwIfAborted();
+    const onError = options.onError ?? console.error.bind(console);
     const wss = new WebSocketServer({ noServer: true });
     const hts = http.createServer(options.onRequest ??
         ((req, res) => {
@@ -48,30 +49,31 @@ export default async function serve(server, options) {
         };
         try {
             Promise.resolve(options.onUpgrade(ctx)).catch((error) => {
-                options.onError(error);
+                onError(error);
                 ctx.error(500);
             });
         }
         catch (error) {
-            options.onError(error);
+            onError(error);
             ctx.error(500);
         }
     });
-    const connector = server.init();
     wss.on('connection', (ws) => {
-        const client = connector({
+        const client = server.connect({
             key: ws,
             send: (data) => {
                 ws.send(data);
             },
-            terminate: ws.terminate.bind(ws),
+            close: () => {
+                ws.terminate();
+            },
         });
         ws.on('message', (data, isBinary) => {
             invariant(Buffer.isBuffer(data));
             client.message(isBinary ? data : data.toString());
         });
-        ws.on('close', (code, reason) => {
-            client.close(code, reason);
+        ws.on('close', () => {
+            client.close(connectionClosedException);
         });
     });
     options.signal?.addEventListener('abort', () => {
@@ -80,6 +82,6 @@ export default async function serve(server, options) {
     });
     hts.listen(options.port ?? process.env.PORT ?? 3000);
     await once(hts, 'listening');
-    hts.on('error', options.onError);
-    wss.on('error', options.onError);
+    hts.on('error', onError);
+    wss.on('error', onError);
 }

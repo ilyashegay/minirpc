@@ -1,4 +1,4 @@
-import { createTransport, isServerMessage, invariant, } from './utils.js';
+import { createTransport, isServerMessage, invariant, connectionClosedException, } from './utils.js';
 const nativeAdapter = async ({ url, protocols, signal, onMessage, }) => {
     signal.throwIfAborted();
     const ws = new WebSocket(url, protocols);
@@ -96,7 +96,6 @@ export default (options) => {
         latency: 1e3,
         ...(options.heartbeat ?? {}),
     };
-    const connectionClosedException = new DOMException('Connection closed', 'WebSocketConnectionClosedError');
     const controller = new AbortController();
     if (options.signal) {
         const signal = options.signal;

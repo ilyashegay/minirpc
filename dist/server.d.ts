@@ -1,4 +1,3 @@
-/// <reference types="node" />
 import { type ClientRoutes, type ServerRoutes, type DevalueTransforms, type SocketData } from './utils.js';
 export { type DevalueTransforms };
 export declare class RPCClientError extends Error {
@@ -13,24 +12,24 @@ type Ware = {
     use(fn: () => void): Ware;
     routes<R extends ServerRoutes>(routes: R): ClientRoutes<R>;
 };
-export declare function createServer(options: {
+export declare function createServer(options?: {
     heartbeat?: {
         interval?: number;
         latency?: number;
     };
     transforms?: DevalueTransforms;
-    onError: (error: unknown) => void;
+    onError?: (error: unknown) => void;
 }): {
-    router: <R extends ServerRoutes>(routes: R) => ClientRoutes<R>;
-    use: (fn: () => void) => Ware;
-    init: () => (client: {
+    connect: (client: {
         key: WeakKey;
         send: (data: SocketData) => void;
-        terminate(): void;
+        close(): void;
     }) => {
-        message: (data: SocketData) => void;
-        close: (code: number, reason: string | Buffer) => void;
+        message(data: SocketData): void;
+        close(reason: string | Error): void;
     };
+    router: <R extends ServerRoutes>(routes: R) => ClientRoutes<R>;
+    use: (fn: () => void) => Ware;
 };
 export declare function createChannel<T, P extends unknown[] = []>(onSubscribe?: (...args: P) => T | Promise<T>, onUnsubscribe?: () => unknown): {
     readonly size: number;

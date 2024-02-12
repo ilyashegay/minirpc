@@ -2,13 +2,9 @@ import { createTransport, isClientMessage, invariant, } from './utils.js';
 export {};
 export class RPCClientError extends Error {
 }
-export function createServer(options) {
+export function createServer(options = {}) {
     const methods = {};
-    const heartbeat = {
-        interval: 60e3,
-        latency: 1e3,
-        ...(options.heartbeat ?? {}),
-    };
+    const onError = options.onError ?? console.error.bind(console);
     const use = (fn) => makeWare([fn]);
     function router(routes) {
         for (const key of Object.keys(routes)) {
@@ -18,23 +14,24 @@ export function createServer(options) {
         }
         return {};
     }
-    const init = () => (client) => {
+    function connect(client) {
         const transport = createTransport(client.send, options.transforms);
         let activityTimeout;
+        const heartbeatInterval = options.heartbeat?.interval ?? 60e3;
         function setActivityTimer() {
-            activityTimeout ??= setTimeout(checkActivity, transport.getTimeUntilExpectedExpiry(heartbeat.interval));
+            activityTimeout ??= setTimeout(checkActivity, heartbeatInterval - transport.getTimeSinceLastMessage());
         }
         function checkActivity() {
-            if (transport.getTimeUntilExpectedExpiry(heartbeat.interval) > 0) {
+            if (transport.getTimeSinceLastMessage() < heartbeatInterval) {
                 setActivityTimer();
                 return;
             }
-            transport.ping(heartbeat.latency, (alive) => {
+            transport.ping(options.heartbeat?.latency ?? 1e3, (alive) => {
                 if (alive) {
                     setActivityTimer();
                 }
                 else {
-                    client.terminate();
+                    client.close();
                 }
             });
         }
@@ -45,10 +42,10 @@ export function createServer(options) {
                     request = transport.parse(data);
                     if (request === undefined)
                         return;
-                    invariant(isClientMessage(request));
+                    invariant(isClientMessage(request), 'Unknown message format');
                 }
                 catch (error) {
-                    options.onError(error);
+                    onError(error);
                     return;
                 }
                 try {
@@ -61,7 +58,7 @@ export function createServer(options) {
                     Ctx.currentClient = client.key;
                     Promise.resolve(methods[method](...params))
                         .then((result) => {
-                        transport.send({ id, result: result ?? null });
+                        transport.send({ id, result });
                     })
                         .catch((error) => {
                         if (error instanceof RPCClientError) {
@@ -69,7 +66,7 @@ export function createServer(options) {
                         }
                         else {
                             transport.send({ id, error: true });
-                            options.onError(error);
+                            onError(error);
                         }
                     });
                     Ctx.currentClient = undefined;
@@ -80,17 +77,17 @@ export function createServer(options) {
                     }
                     else {
                         transport.send({ id: request.id, error: true });
-                        options.onError(error);
+                        onError(error);
                     }
                 }
             },
-            close(code, reason) {
+            close(reason) {
                 clearTimeout(activityTimeout);
-                transport.close(reason.toString());
+                transport.close(reason);
             },
         };
-    };
-    return { router, use, init };
+    }
+    return { connect, router, use };
 }
 function makeWare(stack) {
     return {
