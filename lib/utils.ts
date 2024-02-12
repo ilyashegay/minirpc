@@ -35,6 +35,11 @@ export type Result<T> = Promise<T> &
 		  }
 		: Record<string, never>)
 
+export const connectionClosedException = new DOMException(
+	'Connection closed',
+	'WebSocketConnectionClosedError',
+)
+
 export function isClientMessage(
 	message: Record<string, unknown>,
 ): message is ClientMessage {
@@ -66,11 +71,10 @@ export function createTransport(
 	transforms?: DevalueTransforms,
 ) {
 	type StreamMessage =
-		| { stream: 'event'; id: number; data: unknown[] }
-		| { stream: 'chunk'; id: number }
-		| { stream: 'done'; id: number }
-		| { stream: 'cancel'; id: number; reason: string }
-		| { stream: 'error'; id: number; error: string }
+		| { id: number; stream: 'item'; data: null | unknown[] }
+		| { id: number; stream: 'done' }
+		| { id: number; stream: 'cancel'; reason: string }
+		| { id: number; stream: 'error'; error: string }
 
 	type InboundStream = {
 		controller: ReadableStreamDefaultController<unknown>
@@ -122,13 +126,13 @@ export function createTransport(
 		lastMessageTime = Date.now()
 		if (expectedChunkId) {
 			const stream = inboundStreams.get(expectedChunkId)
-			invariant(stream, `Unknown stream id ${expectedChunkId}`)
+			invariant(stream)
 			expectedChunkId = undefined
 			if (stream.canceled) return
 			stream.controller.enqueue(data)
 			return
 		}
-		invariant(typeof data === 'string', 'Unexpected binary message')
+		invariant(typeof data === 'string')
 		if (data === 'ping') {
 			send('pong')
 			return
@@ -142,29 +146,33 @@ export function createTransport(
 				| ClientMessage
 				| ServerMessage
 		}
-		invariant('stream' in message, 'Unknown message')
+		invariant('stream' in message)
 		if (message.stream === 'cancel') {
 			const stream = outboundStreams.get(message.id)
-			invariant(stream, `Unknown stream id ${message.id}`)
+			invariant(stream)
 			stream.abort(message.reason)
 			return
 		}
-		if (message.stream === 'chunk') {
-			expectedChunkId = message.id
-			return
-		}
-		const stream = inboundStreams.get(message.id)
-		invariant(stream, `Unknown stream id ${message.id}`)
-		if (message.stream === 'event') {
+		if (message.stream === 'item') {
+			if (!Array.isArray(message.data)) {
+				expectedChunkId = message.id
+				return
+			}
+			const stream = inboundStreams.get(message.id)
+			invariant(stream)
 			if (stream.canceled) return
 			stream.controller.enqueue(devalue.unflatten(message.data))
 		}
 		if (message.stream === 'done') {
+			const stream = inboundStreams.get(message.id)
+			invariant(stream)
 			inboundStreams.delete(message.id)
 			if (stream.canceled) return
 			stream.controller.close()
 		}
 		if (message.stream === 'error') {
+			const stream = inboundStreams.get(message.id)
+			invariant(stream)
 			inboundStreams.delete(message.id)
 			if (stream.canceled) return
 			stream.controller.error(message.error)
@@ -187,14 +195,14 @@ export function createTransport(
 					value instanceof ArrayBuffer ||
 					ArrayBuffer.isView(value)
 				) {
-					send(JSON.stringify({ stream: 'chunk', id }))
+					send(`{"stream":"item","id":${id},"data":null}`)
 					send(value)
 				} else {
-					const data = JSON.parse(devalue.stringify(value)) as unknown[]
-					send(JSON.stringify({ stream: 'event', id, data }))
+					const data = devalue.stringify(value)
+					send(`{"stream":"item","id":${id},"data":${data}}`)
 				}
 			}
-			send(JSON.stringify({ stream: 'done', id }))
+			send(`{"stream":"done","id":${id}}`)
 		} catch (error) {
 			if (controller.signal.aborted) return
 			send(JSON.stringify({ stream: 'error', id, error: String(error) }))
@@ -221,8 +229,8 @@ export function createTransport(
 				stream.abort(reason)
 			}
 		},
-		getTimeUntilExpectedExpiry(interval: number) {
-			return lastMessageTime + interval - Date.now()
+		getTimeSinceLastMessage() {
+			return Date.now() - lastMessageTime
 		},
 		ping(latency: number, onResult: (alive: boolean) => void) {
 			invariant(!closed)

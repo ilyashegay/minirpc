@@ -72,6 +72,12 @@ const numberContext = createContext(0)
 const mwCounterCtx = createContext(0)
 
 const router = server.router({
+	voidReturn() {
+		return
+	},
+	nullReturn() {
+		return null
+	},
 	getRangeChannel: channel.pull,
 	...server
 		.use(() => {
@@ -105,6 +111,13 @@ const router = server.router({
 	},
 })
 
+await test('voidReturn', async () => {
+	// eslint-disable-next-line @typescript-eslint/no-confusing-void-expression
+	assert.equal(await api.voidReturn(), undefined)
+})
+await test('nullReturn', async () => {
+	assert.equal(await api.nullReturn(), null)
+})
 await test('add', async () => {
 	assert.equal(await api.add(123, 456), 579)
 })

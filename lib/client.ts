@@ -7,6 +7,7 @@ import {
 	createTransport,
 	isServerMessage,
 	invariant,
+	connectionClosedException,
 } from './utils.js'
 
 export type { DevalueTransforms }
@@ -164,11 +165,6 @@ export default <Router extends ClientRoutes>(options: {
 		latency: 1e3,
 		...(options.heartbeat ?? {}),
 	}
-
-	const connectionClosedException = new DOMException(
-		'Connection closed',
-		'WebSocketConnectionClosedError',
-	)
 
 	const controller = new AbortController()
 	if (options.signal) {

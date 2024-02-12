@@ -25,29 +25,15 @@ type Ware = {
 	routes<R extends ServerRoutes>(routes: R): ClientRoutes<R>
 }
 
-export function createServer(options: {
-	heartbeat?: { interval?: number; latency?: number }
-	transforms?: DevalueTransforms
-	onError?: (error: unknown) => void
-}) {
-	type Client = {
-		key: WeakKey
-		send: (data: SocketData) => void
-		terminate(): void
-	}
-	type Connector = (client: Client) => {
-		message: (data: SocketData) => void
-		close: (code: number, reason: string | Buffer) => void
-	}
-
+export function createServer(
+	options: {
+		heartbeat?: { interval?: number; latency?: number }
+		transforms?: DevalueTransforms
+		onError?: (error: unknown) => void
+	} = {},
+) {
 	const methods: ServerRoutes = {}
-
 	const onError = options.onError ?? console.error.bind(console)
-	const heartbeat = {
-		interval: 60e3,
-		latency: 1e3,
-		...(options.heartbeat ?? {}),
-	}
 
 	const use = (fn: () => void): Ware => makeWare([fn])
 
@@ -59,30 +45,35 @@ export function createServer(options: {
 		return {} as ClientRoutes<R>
 	}
 
-	const init = (): Connector => (client) => {
+	function connect(client: {
+		key: WeakKey
+		send: (data: SocketData) => void
+		close(): void
+	}) {
 		const transport = createTransport(client.send, options.transforms)
 		let activityTimeout: ReturnType<typeof setTimeout> | undefined
+		const heartbeatInterval = options.heartbeat?.interval ?? 60e3
 		function setActivityTimer() {
 			activityTimeout ??= setTimeout(
 				checkActivity,
-				transport.getTimeUntilExpectedExpiry(heartbeat.interval),
+				heartbeatInterval - transport.getTimeSinceLastMessage(),
 			)
 		}
 		function checkActivity() {
-			if (transport.getTimeUntilExpectedExpiry(heartbeat.interval) > 0) {
+			if (transport.getTimeSinceLastMessage() < heartbeatInterval) {
 				setActivityTimer()
 				return
 			}
-			transport.ping(heartbeat.latency, (alive) => {
+			transport.ping(options.heartbeat?.latency ?? 1e3, (alive) => {
 				if (alive) {
 					setActivityTimer()
 				} else {
-					client.terminate()
+					client.close()
 				}
 			})
 		}
 		return {
-			message(data) {
+			message(data: SocketData) {
 				let request: ReturnType<typeof transport.parse>
 				try {
 					request = transport.parse(data)
@@ -101,8 +92,8 @@ export function createServer(options: {
 					}
 					Ctx.currentClient = client.key
 					Promise.resolve(methods[method](...params))
-						.then((result) => {
-							transport.send({ id, result: result ?? null })
+						.then((result: unknown) => {
+							transport.send({ id, result })
 						})
 						.catch((error) => {
 							if (error instanceof RPCClientError) {
@@ -122,14 +113,14 @@ export function createServer(options: {
 					}
 				}
 			},
-			close(code, reason) {
+			close(reason: string | Error) {
 				clearTimeout(activityTimeout)
-				transport.close(reason.toString())
+				transport.close(reason)
 			},
 		}
 	}
 
-	return { router, use, init }
+	return { connect, router, use }
 }
 
 function makeWare(stack: (() => void)[]): Ware {
