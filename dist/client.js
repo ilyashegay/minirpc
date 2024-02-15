@@ -75,90 +75,104 @@ async function backoff(error, attempt, options, signal) {
         signal.addEventListener('abort', onAbort);
     });
 }
-export default (options) => {
+export function connect(options) {
+    function handleError(error) {
+        if (error instanceof DOMException && error.name === 'AbortError') {
+            return true;
+        }
+        if (options.onError) {
+            options.onError(error);
+        }
+        else {
+            console.error(error);
+        }
+        return false;
+    }
+    const client = options.client ?? createClient();
+    void (async () => {
+        for (;;) {
+            let connection;
+            try {
+                connection = await client.connect(options);
+            }
+            catch (error) {
+                handleError(error);
+                break;
+            }
+            try {
+                await options.onConnection?.(connection);
+            }
+            catch (error) {
+                if (handleError(error))
+                    break;
+            }
+            await connection.closed;
+        }
+    })();
+    return client.router;
+}
+export function createClient() {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const queries = new Map();
     let nextRequestId = 1;
     let transport;
     let messageQueue;
-    const onError = options.onError ?? console.error.bind(console);
-    const backOffOptions = {
-        jitter: false,
-        maxDelay: Infinity,
-        numOfAttempts: 10,
-        retry: () => true,
-        startingDelay: 100,
-        timeMultiple: 2,
-        ...(options.backoff ?? {}),
-    };
-    const heartbeat = {
-        interval: 10e3,
-        latency: 1e3,
-        ...(options.heartbeat ?? {}),
-    };
-    const controller = new AbortController();
-    if (options.signal) {
-        const signal = options.signal;
-        signal.throwIfAborted();
-        signal.addEventListener('abort', () => {
-            if (signal.reason instanceof Error) {
-                controller.abort(signal.reason);
-            }
-            else {
-                controller.abort();
-            }
-        });
-    }
-    const isAbortError = (error) => error instanceof DOMException && error.name === 'AbortError';
-    void listen().catch((error) => {
-        if (!isAbortError(error))
-            onError(error);
-    });
-    async function connect() {
+    let onError;
+    async function connect(options) {
+        onError = options.onError ?? console.error.bind(console);
+        const backOffOptions = {
+            jitter: false,
+            maxDelay: Infinity,
+            numOfAttempts: 10,
+            retry: () => true,
+            startingDelay: 100,
+            timeMultiple: 2,
+            ...(options.backoff ?? {}),
+        };
+        const controller = new AbortController();
+        if (options.signal) {
+            const signal = options.signal;
+            signal.throwIfAborted();
+            signal.addEventListener('abort', () => {
+                if (signal.reason instanceof Error) {
+                    controller.abort(signal.reason);
+                }
+                else {
+                    controller.abort();
+                }
+            });
+        }
         for (let attempt = 0;;) {
             try {
-                return await (options.adapter ?? nativeAdapter)({
+                const connection = await (options.adapter ?? nativeAdapter)({
                     url: options.url,
                     protocols: options.protocols,
                     signal: controller.signal,
                     onMessage: receiveSocketData,
                 });
-            }
-            catch (error) {
-                await backoff(error, ++attempt, backOffOptions, controller.signal);
-            }
-        }
-    }
-    async function listen() {
-        for (;;) {
-            const connection = await connect();
-            const interval = setInterval(() => {
-                transport?.ping(heartbeat.latency, (alive) => {
-                    if (!alive)
-                        connection.close(1001);
+                const interval = setInterval(() => {
+                    transport?.ping(options.heartbeat?.latency ?? 1e3, (alive) => {
+                        if (!alive)
+                            connection.close(1001);
+                    });
+                }, options.heartbeat?.interval ?? 10e3);
+                void connection.closed.then(() => {
+                    clearInterval(interval);
+                    transport?.close(connectionClosedException);
+                    transport = undefined;
+                    for (const handle of queries.values()) {
+                        handle.reject(connectionClosedException);
+                    }
                 });
-            }, heartbeat.interval);
-            void connection.closed.then(() => {
-                clearInterval(interval);
-                transport?.close(connectionClosedException);
-                transport = undefined;
-                for (const handle of queries.values()) {
-                    handle.reject(connectionClosedException);
-                }
-            });
-            try {
                 transport = createTransport((data) => {
                     connection.send(data);
                 }, options.transforms);
                 messageQueue?.forEach(transport.send);
                 messageQueue = undefined;
-                await options.onConnection?.(connection);
-                await connection.closed;
+                return connection;
             }
             catch (error) {
-                if (isAbortError(error))
-                    break;
-                onError(error);
+                await backoff(error, ++attempt, backOffOptions, controller.signal);
             }
         }
     }
@@ -197,9 +211,9 @@ export default (options) => {
             queries.set(id, { resolve, reject });
         });
         promise.subscribe = (observer, options = {}) => {
-            const handleError = options.onError ?? onError;
             promise
                 .then(async (stream) => {
+                const handleError = options.onError ?? onError;
                 invariant(stream instanceof ReadableStream, 'Expected ReadableStream');
                 const reader = stream.getReader();
                 const onAbort = () => {
@@ -229,12 +243,13 @@ export default (options) => {
                     query(method, params).subscribe(observer, options);
                     return;
                 }
-                handleError(error);
+                ;
+                (options.onError ?? onError)(error);
             });
         };
         return promise;
     }
-    return new Proxy({}, {
+    const router = new Proxy({}, {
         get(_, prop) {
             return (...args) => {
                 if (typeof prop === 'string') {
@@ -243,4 +258,5 @@ export default (options) => {
             };
         },
     });
-};
+    return { router, connect };
+}

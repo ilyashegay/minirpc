@@ -10,6 +10,23 @@ export type Connection = {
     send(message: SocketData): void;
     close(code?: number, reason?: string): void;
 };
+type Client<Router extends ClientRoutes> = {
+    router: Router;
+    connect(options: ConnectOptions): Promise<Connection>;
+};
+type ConnectOptions = {
+    url: string;
+    protocols?: string | string[];
+    signal?: AbortSignal;
+    backoff?: Partial<BackoffOptions>;
+    transforms?: DevalueTransforms;
+    heartbeat?: {
+        interval?: number;
+        latency?: number;
+    };
+    adapter?: Adapter;
+    onError?: (error: unknown) => void;
+};
 export type Adapter = (options: {
     url: string;
     protocols?: string | string[];
@@ -24,19 +41,8 @@ type BackoffOptions = {
     startingDelay: number;
     timeMultiple: number;
 };
-declare function backoff(error: unknown, attempt: number, options: BackoffOptions, signal: AbortSignal): Promise<void>;
-declare const _default: <Router extends ClientRoutes<import("./utils.js").ServerRoutes>>(options: {
-    url: string;
-    protocols?: string | string[] | undefined;
-    signal?: AbortSignal | undefined;
-    backoff?: Partial<BackoffOptions> | undefined;
-    transforms?: DevalueTransforms | undefined;
-    heartbeat?: {
-        interval?: number | undefined;
-        latency?: number | undefined;
-    } | undefined;
-    adapter?: Adapter | undefined;
-    onConnection?: ((connection: Connection) => void | PromiseLike<void>) | undefined;
-    onError?: ((error: unknown) => void) | undefined;
-}) => Router;
-export default _default;
+export declare function connect<Router extends ClientRoutes>(options: ConnectOptions & {
+    client?: Client<Router>;
+    onConnection?: (connection: Connection) => void | PromiseLike<void>;
+}): Router;
+export declare function createClient<Router extends ClientRoutes>(): Client<Router>;
