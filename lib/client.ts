@@ -20,6 +20,22 @@ export type Connection = {
 	close(code?: number, reason?: string): void
 }
 
+type Client<Router extends ClientRoutes> = {
+	router: Router
+	connect(options: ConnectOptions): Promise<Connection>
+}
+
+type ConnectOptions = {
+	url: string
+	protocols?: string | string[]
+	signal?: AbortSignal
+	backoff?: Partial<BackoffOptions>
+	transforms?: DevalueTransforms
+	heartbeat?: { interval?: number; latency?: number }
+	adapter?: Adapter
+	onError?: (error: unknown) => void
+}
+
 export type Adapter = (options: {
 	url: string
 	protocols?: string | string[]
@@ -127,17 +143,45 @@ async function backoff(
 	})
 }
 
-export default <Router extends ClientRoutes>(options: {
-	url: string
-	protocols?: string | string[]
-	signal?: AbortSignal
-	backoff?: Partial<BackoffOptions>
-	transforms?: DevalueTransforms
-	heartbeat?: { interval?: number; latency?: number }
-	adapter?: Adapter
-	onConnection?: (connection: Connection) => void | PromiseLike<void>
-	onError?: (error: unknown) => void
-}) => {
+export function connect<Router extends ClientRoutes>(
+	options: ConnectOptions & {
+		client?: Client<Router>
+		onConnection?: (connection: Connection) => void | PromiseLike<void>
+	},
+) {
+	function handleError(error: unknown) {
+		if (error instanceof DOMException && error.name === 'AbortError') {
+			return true
+		}
+		if (options.onError) {
+			options.onError(error)
+		} else {
+			console.error(error)
+		}
+		return false
+	}
+	const client = options.client ?? createClient()
+	void (async () => {
+		for (;;) {
+			let connection: Connection
+			try {
+				connection = await client.connect(options)
+			} catch (error) {
+				handleError(error)
+				break
+			}
+			try {
+				await options.onConnection?.(connection)
+			} catch (error) {
+				if (handleError(error)) break
+			}
+			await connection.closed
+		}
+	})()
+	return client.router
+}
+
+export function createClient<Router extends ClientRoutes>(): Client<Router> {
 	type PromiseHandle<T> = {
 		resolve: Parameters<ConstructorParameters<typeof Promise<T>>[0]>[0]
 		reject: Parameters<ConstructorParameters<typeof Promise<T>>[0]>[1]
@@ -145,89 +189,62 @@ export default <Router extends ClientRoutes>(options: {
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	const queries = new Map<number, PromiseHandle<any>>()
 	let nextRequestId = 1
-
 	let transport: ReturnType<typeof createTransport> | undefined
 	let messageQueue: ClientMessage[] | undefined
+	let onError: (error: unknown) => void
 
-	const onError = options.onError ?? console.error.bind(console)
-
-	const backOffOptions: BackoffOptions = {
-		jitter: false,
-		maxDelay: Infinity,
-		numOfAttempts: 10,
-		retry: () => true,
-		startingDelay: 100,
-		timeMultiple: 2,
-		...(options.backoff ?? {}),
-	}
-	const heartbeat = {
-		interval: 10e3,
-		latency: 1e3,
-		...(options.heartbeat ?? {}),
-	}
-
-	const controller = new AbortController()
-	if (options.signal) {
-		const signal = options.signal
-		signal.throwIfAborted()
-		signal.addEventListener('abort', () => {
-			if (signal.reason instanceof Error) {
-				controller.abort(signal.reason)
-			} else {
-				controller.abort()
-			}
-		})
-	}
-
-	const isAbortError = (error: unknown) =>
-		error instanceof DOMException && error.name === 'AbortError'
-
-	void listen().catch((error) => {
-		if (!isAbortError(error)) onError(error)
-	})
-
-	async function connect() {
+	async function connect(options: ConnectOptions): Promise<Connection> {
+		onError = options.onError ?? console.error.bind(console)
+		const backOffOptions: BackoffOptions = {
+			jitter: false,
+			maxDelay: Infinity,
+			numOfAttempts: 10,
+			retry: () => true,
+			startingDelay: 100,
+			timeMultiple: 2,
+			...(options.backoff ?? {}),
+		}
+		const controller = new AbortController()
+		if (options.signal) {
+			const signal = options.signal
+			signal.throwIfAborted()
+			signal.addEventListener('abort', () => {
+				if (signal.reason instanceof Error) {
+					controller.abort(signal.reason)
+				} else {
+					controller.abort()
+				}
+			})
+		}
 		for (let attempt = 0; ; ) {
 			try {
-				return await (options.adapter ?? nativeAdapter)({
+				const connection = await (options.adapter ?? nativeAdapter)({
 					url: options.url,
 					protocols: options.protocols,
 					signal: controller.signal,
 					onMessage: receiveSocketData,
 				})
-			} catch (error) {
-				await backoff(error, ++attempt, backOffOptions, controller.signal)
-			}
-		}
-	}
-
-	async function listen() {
-		for (;;) {
-			const connection = await connect()
-			const interval = setInterval(() => {
-				transport?.ping(heartbeat.latency, (alive) => {
-					if (!alive) connection.close(1001)
+				const interval = setInterval(() => {
+					transport?.ping(options.heartbeat?.latency ?? 1e3, (alive) => {
+						if (!alive) connection.close(1001)
+					})
+				}, options.heartbeat?.interval ?? 10e3)
+				void connection.closed.then(() => {
+					clearInterval(interval)
+					transport?.close(connectionClosedException)
+					transport = undefined
+					for (const handle of queries.values()) {
+						handle.reject(connectionClosedException)
+					}
 				})
-			}, heartbeat.interval)
-			void connection.closed.then(() => {
-				clearInterval(interval)
-				transport?.close(connectionClosedException)
-				transport = undefined
-				for (const handle of queries.values()) {
-					handle.reject(connectionClosedException)
-				}
-			})
-			try {
 				transport = createTransport((data) => {
 					connection.send(data)
 				}, options.transforms)
 				messageQueue?.forEach(transport.send)
 				messageQueue = undefined
-				await options.onConnection?.(connection)
-				await connection.closed
+				return connection
 			} catch (error) {
-				if (isAbortError(error)) break
-				onError(error)
+				await backoff(error, ++attempt, backOffOptions, controller.signal)
 			}
 		}
 	}
@@ -266,9 +283,9 @@ export default <Router extends ClientRoutes>(options: {
 			queries.set(id, { resolve, reject })
 		}) as unknown as Result<R>
 		promise.subscribe = (observer, options = {}) => {
-			const handleError = options.onError ?? onError
 			promise
 				.then(async (stream) => {
+					const handleError = options.onError ?? onError
 					invariant(stream instanceof ReadableStream, 'Expected ReadableStream')
 					const reader = (stream as ReadableStream<R>).getReader()
 					const onAbort = () => {
@@ -295,13 +312,13 @@ export default <Router extends ClientRoutes>(options: {
 						query<P, R>(method, params).subscribe(observer, options)
 						return
 					}
-					handleError(error)
+					;(options.onError ?? onError)(error)
 				})
 		}
 		return promise
 	}
 
-	return new Proxy({} as Router, {
+	const router = new Proxy({} as Router, {
 		get(_, prop) {
 			return (...args: unknown[]) => {
 				if (typeof prop === 'string') {
@@ -310,4 +327,6 @@ export default <Router extends ClientRoutes>(options: {
 			}
 		},
 	})
+
+	return { router, connect }
 }

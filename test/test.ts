@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import createClient from '../lib/client'
+import { connect } from '../lib/client'
 import { createServer, createContext, createChannel } from '../lib/server'
 import serve from '../lib/node-server-adapter'
 import nodePRCClientAdapter from '../lib/node-client-adapter'
@@ -34,7 +34,7 @@ await serve(server, {
 })
 console.log('listening')
 
-const api = createClient<typeof router>({
+const api = connect<typeof router>({
 	url: 'ws://localhost:3000',
 	protocols: [],
 	signal: abortController.signal,
