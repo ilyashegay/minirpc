@@ -11,9 +11,8 @@
 		"forceConsistentCasingInFileNames": true,
 		"checkJs": true,
 		"lib": ["DOM", "ESNext"],
+		"rootDir": ".",
 		"baseUrl": ".",
-		"outDir": "./dist",
-		"declaration": true,
-		"declarationDir": "./dist"
+		"outDir": "./dist"
 	}
 }

@@ -3,80 +3,48 @@
 	"version": "0.0.1",
 	"type": "module",
 	"exports": {
-		"./client": {
-			"types": "./dist/client.d.ts",
-			"default": "./dist/client.js"
+		".": {
+			"types": "./lib/types.d.ts",
+			"node": "./dist/node.js",
+			"default": "./dist/core.js"
 		},
-		"./server": {
-			"types": "./dist/server.d.ts",
-			"default": "./dist/server.js"
+		"./core": {
+			"types": "./lib/types.d.ts",
+			"default": "./dist/core.js"
 		},
-		"./adapters/node-client": {
-			"types": "./dist/node-client-adapter.d.ts",
-			"default": "./dist/node-client-adapter.js"
-		},
-		"./adapters/node": {
-			"types": "./dist/node-server-adapter.d.ts",
-			"default": "./dist/node-server-adapter.js"
+		"./node": {
+			"types": "./lib/types.d.ts",
+			"default": "./dist/node.js"
 		}
 	},
 	"license": "MIT",
 	"repository": "https://github.com/ilyashegay/minirpc",
 	"files": [
-		"dist/*"
+		"dist/core.js",
+		"dist/node.js",
+		"lib/types.d.ts"
 	],
 	"scripts": {
-		"build": "tsc --project tsconfig.build.json",
-		"test": "node --test --import tsx ./test/test.ts",
-		"lint": "npm run tsc && npm run eslint",
-		"tsc": "tsc --noEmit --project tsconfig.json",
-		"eslint": "eslint lib"
+		"build": "tsc lib/*.ts --rootDir ./lib --outDir ./dist --skipLibCheck --target esnext --module esnext --moduleResolution bundler",
+		"test": "npm run build && node --test --import tsx ./test/test.ts",
+		"lint": "tsc --noEmit && eslint lib test"
 	},
 	"dependencies": {
 		"devalue": "^4.3.2",
 		"ws": "^8.16.0"
 	},
 	"devDependencies": {
-		"@types/node": "^20.11.17",
+		"@types/node": "^20.11.25",
 		"@types/ws": "^8.5.10",
-		"@typescript-eslint/eslint-plugin": "^6.21.0",
-		"@typescript-eslint/parser": "^6.21.0",
-		"eslint": "^8.56.0",
-		"eslint-config-prettier": "^9.1.0",
+		"eslint": "^8.57.0",
 		"tsx": "^4.7.1",
-		"typescript": "^5.3.3"
+		"typescript": "^5.4.2",
+		"typescript-eslint": "^7.1.1"
 	},
 	"prettier": {
 		"semi": false,
 		"singleQuote": true,
 		"trailingComma": "all",
 		"useTabs": true
-	},
-	"eslintConfig": {
-		"env": {
-			"es2024": true,
-			"browser": true,
-			"node": true
-		},
-		"parserOptions": {
-			"project": true
-		},
-		"rules": {
-			"@typescript-eslint/no-non-null-assertion": "off",
-			"@typescript-eslint/consistent-type-definitions": [
-				"error",
-				"type"
-			]
-		},
-		"ignorePatterns": [
-			"dist/*",
-			"*.js"
-		],
-		"extends": [
-			"eslint:recommended",
-			"plugin:@typescript-eslint/strict-type-checked",
-			"plugin:@typescript-eslint/stylistic-type-checked",
-			"prettier"
-		]
 	}
 }

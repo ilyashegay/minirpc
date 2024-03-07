@@ -3,8 +3,7 @@
 Server:
 
 ```ts
-import { createServer } from 'minirpc/server'
-import serve from 'minirpc/adapters/node'
+import { createServer } from 'minirpc'
 
 const server = createServer()
 
@@ -16,13 +15,13 @@ const router = server.router({
 
 export type Router = typeof router
 
-await serve(server, { port: 3000 })
+await server.serve({ port: 3000 })
 ```
 
 Client:
 
 ```ts
-import createClient from 'minirpc/client'
+import createClient from 'minirpc'
 import type { Router } from './server'
 
 const api = createClient<Router>({
@@ -37,7 +36,7 @@ console.log(await api.greet('World')) // Hello World
 Server:
 
 ```ts
-import { createChannel } from 'minirpc/server'
+import { createChannel } from 'minirpc'
 
 const channel = createChannel((name: string) => {
 	return `Welcome ${name} to this channel`
@@ -65,7 +64,7 @@ api.getEvents('John Doe').subscribe((event) => {
 ## Context
 
 ```ts
-import { createContext, RPCClientError } from 'minirpc/server'
+import { createContext, RPCClientError } from 'minirpc'
 
 const userIdContext = createContext<string>()
 
@@ -94,9 +93,7 @@ router({
 Server:
 
 ```ts
-import serve from 'minirpc/adapters/node'
-
-serve(server, {
+server.serve({
 	onUpgrade(ctx) {
 		if (ctx.request.url === '/forbidden') {
 			ctx.error(401)
@@ -138,10 +135,8 @@ Server:
 
 ```ts
 const server = createServer({
-	heartbeat: {
-		interval: 60_000,
-		latency: 1_000,
-	},
+	pingTimeout: 60_000,
+	pongTimeout: 1_000,
 })
 ```
 
@@ -149,9 +144,7 @@ Client:
 
 ```ts
 const api = createClient({
-	heartbeat: {
-		interval: 30_000,
-		latency: 1_000,
-	},
+	pingInterval: 30_000,
+	pongTimeout: 1_000,
 })
 ```
