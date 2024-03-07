@@ -1,26 +1,19 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { connect } from '../lib/client'
-import { createServer, createContext, createChannel } from '../lib/server'
-import serve from '../lib/node-server-adapter'
-import nodePRCClientAdapter from '../lib/node-client-adapter'
+import { connect, createServer, createContext, createChannel } from 'minirpc'
 
 const abortController = new AbortController()
 
-const server = createServer({
-	onError: (error) => {
-		console.error(error)
-	},
-})
+const server = createServer()
 
-await serve(server, {
+await server.serve({
 	port: 3000,
 	signal: abortController.signal,
-	onRequest(request, response) {
+	request(request, response) {
 		response.end('Hello World')
 	},
-	onUpgrade(ctx) {
-		console.log('upgrading')
+	upgrade(ctx) {
+		console.log('upgrading', ctx.request.url)
 		const ws = ctx.upgrade()
 		numberContext(ws).set(9)
 		console.log('new connection')
@@ -28,7 +21,7 @@ await serve(server, {
 			console.log('closed', code, reason.toString())
 		})
 	},
-	onError(error) {
+	error(error) {
 		console.error(error)
 	},
 })
@@ -36,9 +29,7 @@ console.log('listening')
 
 const api = connect<typeof router>({
 	url: 'ws://localhost:3000',
-	protocols: [],
 	signal: abortController.signal,
-	adapter: nodePRCClientAdapter(),
 	backoff: {
 		jitter: false,
 		maxDelay: Infinity,
@@ -47,12 +38,12 @@ const api = connect<typeof router>({
 		startingDelay: 100,
 		timeMultiple: 2,
 	},
-	async onConnection(connection) {
+	async connection(connection) {
 		console.log('connection opened')
 		await connection.closed // wait for connection to close
 		console.log('connection closed')
 	},
-	onError: (error) => {
+	error: (error) => {
 		console.error(error)
 	},
 })
