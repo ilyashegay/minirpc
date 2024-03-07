@@ -132,6 +132,8 @@ export type ServerServeOptions = {
 	request?: http.RequestListener
 	upgrade?: (ctx: {
 		request: http.IncomingMessage
+		url: URL
+		cookies: Record<string, string | undefined>
 		upgrade(): WebSocket
 		reject(code: number): void
 	}) => unknown

@@ -53,6 +53,79 @@ export function createClient() {
         connect: (options) => client.connect({ ...options, adapter }),
     };
 }
+class UpgradeContext {
+    request;
+    #head;
+    #wss;
+    #url;
+    #cookies;
+    constructor(request, head, wss) {
+        this.request = request;
+        this.#head = head;
+        this.#wss = wss;
+    }
+    get url() {
+        this.#url ??= new URL(this.request.url, `http://${this.request.headers.host}`);
+        return this.#url;
+    }
+    get cookies() {
+        if (this.#cookies)
+            return this.#cookies;
+        const h = this.request.headers.cookie;
+        this.#cookies = {};
+        if (!h)
+            return this.#cookies;
+        let index = 0;
+        while (index < h.length) {
+            const eqIdx = h.indexOf('=', index);
+            // no more cookie pairs
+            if (eqIdx === -1)
+                break;
+            let endIdx = h.indexOf(';', index);
+            if (endIdx === -1) {
+                endIdx = h.length;
+            }
+            else if (endIdx < eqIdx) {
+                // backtrack on prior semicolon
+                index = h.lastIndexOf(';', eqIdx - 1) + 1;
+                continue;
+            }
+            const key = h.slice(index, eqIdx).trim();
+            // only assign once
+            if (undefined === this.#cookies[key]) {
+                let val = h.slice(eqIdx + 1, endIdx).trim();
+                // quoted values
+                if (val.codePointAt(0) === 0x22) {
+                    val = val.slice(1, -1);
+                }
+                this.#cookies[key] = decodeURIComponent(val);
+            }
+            index = endIdx + 1;
+        }
+        return this.#cookies;
+    }
+    upgrade() {
+        let result;
+        this.#wss.handleUpgrade(this.request, this.request.socket, this.#head, (ws) => {
+            result = ws;
+            this.#wss.emit('connection', ws, this.request);
+        });
+        return result;
+    }
+    reject(code) {
+        if (code < 400 || !(code in http.STATUS_CODES))
+            code = 500;
+        const status = http.STATUS_CODES[code];
+        const head = [
+            `HTTP/1.1 ${code} ${status}`,
+            'Connection: close',
+            'Content-Type: text/plain',
+            `Content-Length: ${Buffer.byteLength(status)}`,
+        ];
+        this.request.socket.once('finish', () => this.request.socket.destroy());
+        this.request.socket.end(`${head.join('\r\n')}\r\n\r\n${status}`);
+    }
+}
 export function createServer() {
     const server = lib.createServer();
     async function serve(options = {}) {
@@ -75,32 +148,12 @@ export function createServer() {
                 });
                 return;
             }
-            function upgrade() {
-                let result;
-                wss.handleUpgrade(request, socket, head, (ws) => {
-                    result = ws;
-                    wss.emit('connection', ws, request);
-                });
-                return result;
-            }
-            function reject(code) {
-                if (code < 400 || !(code in http.STATUS_CODES))
-                    code = 500;
-                const status = http.STATUS_CODES[code];
-                const head = [
-                    `HTTP/1.1 ${code} ${status}`,
-                    'Connection: close',
-                    'Content-Type: text/plain',
-                    `Content-Length: ${Buffer.byteLength(status)}`,
-                ];
-                socket.once('finish', () => socket.destroy());
-                socket.end(`${head.join('\r\n')}\r\n\r\n${status}`);
-            }
+            const ctx = new UpgradeContext(request, head, wss);
             void (async () => {
-                await options.upgrade({ request, upgrade, reject });
+                await options.upgrade(ctx);
             })().catch((error) => {
                 onError(error);
-                reject(500);
+                ctx.reject(500);
             });
         });
         wss.on('connection', (ws) => {
